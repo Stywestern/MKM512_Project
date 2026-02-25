@@ -1,0 +1,22 @@
+# Python standard
+__pycache__/
+*.py[cod]
+.mkm512_venv/
+env/
+
+# IDE settings
+.vscode/
+
+# Project-specific Data (Don't push these!)
+assets/faces/raw_images/
+assets/faces/embeddings/*.pkl
+
+# Models (Too heavy for GitHub)
+assets/models/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+mock_database

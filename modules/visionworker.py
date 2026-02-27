@@ -44,18 +44,28 @@ class VisionWorker(QThread):
 
             # 2. Flow Control: If frozen, we don't process AI or emit new signals
             if not self.is_frozen:
-                # For now, we calculate FPS
-                current_time = time.time()
-                fps = 1 / (current_time - prev_time) if prev_time != 0 else 0
-                prev_time = current_time
+                # Placeholders for the Aligned Face and Cosine Scores
+                history_msg = ""
 
                 # --- The Vision Pipeline ---
                 # 1. YOLO Detection
+                detections = self.detector.detect_and_track(frame)
+                if detections:
+                    # 1. Get the raw results
+                    target = detections[0]
+                    x1, y1, x2, y2 = target["face_bbox"]
+                    track_id = target["id"]
+
+                    # 2. We prevent the app from crashing if YOLO predicts outside the frame
+                    h, w = frame.shape[:2]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(w, x2), min(h, y2)
+
+                    # 3. THE CROP
+                    detect_crop = frame[y1:y2, x1:x2].copy()
+
                 # 2. Tracking
                 # 3. Recognition (Adaptive Padding logic we built)
-                
-                # Placeholders for the Aligned Face and Cosine Scores
-                aligned_face = np.zeros((112, 112, 3), dtype=np.uint8)
 
                 # Package the telemetry
                 data = {
@@ -64,12 +74,26 @@ class VisionWorker(QThread):
                     "counts": 0 # Placeholder for detected faces
                 }
 
-                # 4. Push to UI
-                self.update_signal.emit(frame, aligned_face, data)
+                # Push UI
+                    # Fps
+                current_time = time.time()
+                fps = 1 / (current_time - prev_time) if prev_time != 0 else 0
+                prev_time = current_time
+                    # Send data
+                self.update_signal.emit(frame, detect_crop, data)
 
             elapsed = time.time() - start_time
             sleep_time = max(1, int((0.033 - elapsed) * 1000)) 
             self.msleep(sleep_time)
+
+    def step_forward(self):
+        print("I stepped forward")
+
+    def step_backward(self):
+        print("I stepped backward")
+
+    def reset_tracking_data(self):
+        print("I reset")
 
     def stop(self):
         self.running = False

@@ -38,17 +38,13 @@ def main():
     worker = VisionWorker(shared_cam) # since it inherits from Qthread it creates a secondary execution context
 
     log("Initializing SentryHUD... ", "INFO")
-    ui = SentryHUD() # builds but not yet draws
+    ui = SentryHUD(worker_ref=worker) # builds but not yet draws
     
     # 2. Connect Signals (Worker -> UI)
     log("Initializing worker publisher... ", "INFO")
-    worker.update_signal.connect(ui.update_main_feed)
+    worker.update_signal.connect(ui.update_displays)
     
-    # 3. Connect UI Actions (UI -> Worker)
-    log("Binding UI commands... ", "INFO")
-    ui.freeze_btn.clicked.connect(lambda: setattr(worker, 'is_frozen', not worker.is_frozen))
-    
-    # 4. Start
+    # 3. Start
     log("Starting UI... ", "INFO")
     ui.showFullScreen()
 

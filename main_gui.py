@@ -1,14 +1,13 @@
 #main.py
-"""
+
 try:
     import onnxruntime as ort
     # This "pre-warms" the DLL bindings before PyQt6 can interfere
     _ = ort.get_device() 
-    print(_)
 
 except Exception as e:
     print(f"Pre-import warning: {e}")
-"""
+
 
 ##################################### Imports #####################################
 # Libraries

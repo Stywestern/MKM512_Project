@@ -120,27 +120,35 @@ class SentryHUD(QMainWindow):
         lbl.setStyleSheet("border: 1px solid #555; background-color: #222; color: white; font-size: 10px;")
         return lbl
 
-    def update_displays(self, main_frame, aligned_face, data):
+    def update_displays(self, main_frame, new_snap, data):
         # 1. Draw the FPS directly on the main_frame (OpenCV BGR format)
         # Positioning at (10, 40) - Top Left
         fps_val = data.get("fps", 0)
         cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
-
-        # Update Main Feed
+        # 2. Update the Live Main Feed
         rgb_image = cv2.cvtColor(main_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
         qt_img = QImage(rgb_image.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        
+        # Scale to fit the 60% width area of your right column
         self.video_label.setPixmap(QPixmap.fromImage(qt_img).scaled(
-            self.video_label.width(), self.video_label.height(), Qt.AspectRatioMode.KeepAspectRatio))
+            self.video_label.width(), self.video_label.height(), 
+            Qt.AspectRatioMode.KeepAspectRatio))
 
-        # Update Align Preview (The middle small box)
-        if aligned_face is not None:
-            a_rgb = cv2.cvtColor(aligned_face, cv2.COLOR_BGR2RGB)
-            a_qt = QImage(a_rgb.data, 112, 112, 112*3, QImage.Format.Format_RGB888)
-            self.align_cap.setPixmap(QPixmap.fromImage(a_qt))
+        # 3. Handle the "New Detection" Event
+        if new_snap.size > 0:
+            a_rgb = cv2.cvtColor(new_snap, cv2.COLOR_BGR2RGB)
+            a_rgb_resized = cv2.resize(a_rgb, (112, 112)) 
+            
+            rh, rw, rch = a_rgb_resized.shape
+            a_qt = QImage(a_rgb_resized.data, rw, rh, rch * rw, QImage.Format.Format_RGB888)
+            
+            # This fills the first box in your [YOLO | ALIGN | COMPARE] chain
+            self.yolo_cap.setPixmap(QPixmap.fromImage(a_qt))
 
-        # Update History
-        if "history" in data:
-            self.history_list.append(data["history"])
+            # Update left log window
+            update_log = data.get("update")
+            if update_log:
+                self.history_list.append(update_log)

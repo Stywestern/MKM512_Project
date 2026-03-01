@@ -26,11 +26,11 @@ from modules.utils import log
 
 def main():
     log("Initializing QApplication... ", "INFO")
-    app = QApplication(sys.argv) # creates the live program, I can have one such application rolling
+    app = QApplication(sys.argv)
     log("App initialized", "INFO")
 
     log("Initializing CameraStream... ", "INFO")
-    shared_cam = CameraStream().start() # camera takes time to load, so it should start with the UI components as well
+    shared_cam = CameraStream().start()
     
     # 1. Create instances
     log("Initializing VisionWorker... ", "INFO")
@@ -50,7 +50,7 @@ def main():
     log("Starting Sentry Subsystem...", "INFO")
     worker.start()
     
-    sys.exit(app.exec()) # waits until GUI window is closed
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()

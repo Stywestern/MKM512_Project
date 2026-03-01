@@ -110,8 +110,6 @@ class SentryHUD(QMainWindow):
         self.history_list.clear()
         self.worker.reset_tracking_data()
 
-    # ----------- Runs this ^ until moving to the worker init ---------
-
     def _create_preview_box(self, text):
         lbl = QLabel(text)
         lbl.setFixedSize(112, 112)
@@ -120,35 +118,55 @@ class SentryHUD(QMainWindow):
         lbl.setStyleSheet("border: 1px solid #555; background-color: #222; color: white; font-size: 10px;")
         return lbl
 
-    def update_displays(self, main_frame, new_snap, data):
-        # 1. Draw the FPS directly on the main_frame (OpenCV BGR format)
-        # Positioning at (10, 40) - Top Left
-        fps_val = data.get("fps", 0)
+    def update_displays(self, main_frame, image_package, data_package):
+        # 0. Extract data
+        yolo_crop, retina_align = image_package[0], image_package[1]
+        metadata, distances = data_package[0], data_package[1]
+
+        # 1. Update the Live Main Feed, covers Possibility 1, 2, and 3
+        fps_val = metadata.get("fps", 0)
         cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
-        # 2. Update the Live Main Feed
         rgb_image = cv2.cvtColor(main_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
         qt_img = QImage(rgb_image.data, w, h, ch * w, QImage.Format.Format_RGB888)
         
-        # Scale to fit the 60% width area of your right column
         self.video_label.setPixmap(QPixmap.fromImage(qt_img).scaled(
             self.video_label.width(), self.video_label.height(), 
             Qt.AspectRatioMode.KeepAspectRatio))
 
-        # 3. Handle the "New Detection" Event
-        if new_snap.size > 0:
-            a_rgb = cv2.cvtColor(new_snap, cv2.COLOR_BGR2RGB)
-            a_rgb_resized = cv2.resize(a_rgb, (112, 112)) 
-            
-            rh, rw, rch = a_rgb_resized.shape
-            a_qt = QImage(a_rgb_resized.data, rw, rh, rch * rw, QImage.Format.Format_RGB888)
-            
-            # This fills the first box in your [YOLO | ALIGN | COMPARE] chain
-            self.yolo_cap.setPixmap(QPixmap.fromImage(a_qt))
+        # 2. --- POSSIBILITY 3 ONLY: Brand New Target (Get frame, [yolo, aligned]) ---
+        if yolo_crop.size > 0 and retina_align.size > 0:
+            # --- A. Update YOLO CAP (Raw Crop) ---
+            y_rgb = cv2.cvtColor(yolo_crop, cv2.COLOR_BGR2RGB)
+            y_resized = cv2.resize(y_rgb, (112, 112)) 
+            y_qt = QImage(y_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
+            self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
 
-            # Update left log window
-            update_log = data.get("update")
-            if update_log:
-                self.history_list.append(update_log)
+            # --- B. Update ALIGN CAP (RetinaFace Output) ---
+            a_rgb = cv2.cvtColor(retina_align, cv2.COLOR_BGR2RGB)
+            a_resized = cv2.resize(a_rgb, (112, 112)) 
+            a_qt = QImage(a_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
+            self.align_cap.setPixmap(QPixmap.fromImage(a_qt))
+
+        # --- C. Update Log Window ---
+        update_log = metadata.get("update")
+        if update_log and distances:
+            sorted_candidates = sorted(distances.items(), key=lambda x: x[1])
+
+            # 2. Print the Header
+            self.history_list.append(f"<b>{update_log}</b>")
+            self.history_list.append("<font color='#55FF55'>Ranked Candidates:</font>")
+
+            # 3. Print the Top 20
+            for i, (filename, dist) in enumerate(sorted_candidates[:20]):
+                # Visual hierarchy: First is bright, others are dimmed
+                color = "#FFFFFF" if i == 0 else "#888888"
+                
+                # Format: 1. kerem.jpg: 0.1234
+                match_line = f"&nbsp;&nbsp;{i+1}. {filename}: <b>{dist}</b>"
+                self.history_list.append(f"<font color='{color}' size='2'>{match_line}</font>")
+
+            # 4. CAPTURE FOR COMPARE BOX
+            best_match_filename = sorted_candidates[0][0]

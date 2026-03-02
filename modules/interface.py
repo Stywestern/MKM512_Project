@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QGridLayout, QVBoxLayout, QHB
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 import cv2
+import os
 
 # Modules
 import config
@@ -68,6 +69,9 @@ class SentryHUD(QMainWindow):
         self.next_btn = QPushButton(">>")
         self.back_btn = QPushButton("<<")
         self.restart_btn = QPushButton("RESTART")
+        self.fire_btn = QPushButton("FIRE")
+        self.release_btn = QPushButton("RELEASE")
+
         
         for btn in [self.stop_btn, self.next_btn, self.back_btn, self.restart_btn]:
             btn.setMinimumHeight(40)
@@ -85,29 +89,32 @@ class SentryHUD(QMainWindow):
         log("SentryHUD Initialized", "INFO")
 
     def setup_connections(self):
-        """ All button logic stays INSIDE the UI class """
-        self.stop_btn.clicked.connect(self.handle_stop) # freeze
+        """ Define buttons and handlers here, so of them will delagate their jobs to the Worker"""
+        self.stop_btn.clicked.connect(self.handle_stop)
+        self.restart_btn.clicked.connect(self.handle_restart)
+        self.next_btn.clicked.connect(self.handle_next_target)
+        self.back_btn.clicked.connect(self.handle_prev_target)
+        self.release_btn.clicked.connect(self.handle_lock_toggle)
+        self.fire_btn.clicked.connect(self.handle_fire)
 
-        self.restart_btn.clicked.connect(self.handle_restart) # clear cache
-
-        self.next_btn.clicked.connect(self.worker.step_forward) # get the next frame when stopped
-        self.back_btn.clicked.connect(self.worker.step_backward) # get the previous frame when stopped
-
+        HERE HERE HERE
 
     def handle_stop(self):
-        self.worker.is_frozen = not self.worker.is_frozen
-        
-        # Provide visual feedback on the button
-        if self.worker.is_frozen:
+        # The worker handles the logic, just ask for the result
+        is_now_frozen = self.worker.toggle_freeze()
+        if is_now_frozen:
             self.stop_btn.setText("RESUME")
             self.stop_btn.setStyleSheet("background-color: #444; color: yellow;")
+            self.history_list.append("<font color='yellow'>[SYSTEM PAUSED]</font>")
         else:
             self.stop_btn.setText("STOP")
             self.stop_btn.setStyleSheet("background-color: #222; color: white;")
+            self.history_list.append("<font color='white'>[SYSTEM RESUMED]</font>")
 
     def handle_restart(self):
-        # Clear the history log on the screen
+        # 1. Clear the UI
         self.history_list.clear()
+        # 2. Tell the worker to clear the Brain
         self.worker.reset_tracking_data()
 
     def _create_preview_box(self, text):
@@ -136,37 +143,47 @@ class SentryHUD(QMainWindow):
             self.video_label.width(), self.video_label.height(), 
             Qt.AspectRatioMode.KeepAspectRatio))
 
-        # 2. --- POSSIBILITY 3 ONLY: Brand New Target (Get frame, [yolo, aligned]) ---
+        # 2. POSSIBILITY 3 ONLY: Brand New Target (Get frame, [yolo, aligned])
         if yolo_crop.size > 0 and retina_align.size > 0:
-            # --- A. Update YOLO CAP (Raw Crop) ---
+            
+            # A. Update YOLO & ALIGN boxes
             y_rgb = cv2.cvtColor(yolo_crop, cv2.COLOR_BGR2RGB)
-            y_resized = cv2.resize(y_rgb, (112, 112)) 
+            y_resized = cv2.resize(y_rgb, (112, 112))
             y_qt = QImage(y_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
             self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
 
-            # --- B. Update ALIGN CAP (RetinaFace Output) ---
+            # B. Update ALIGN CAP (RetinaFace Output)
             a_rgb = cv2.cvtColor(retina_align, cv2.COLOR_BGR2RGB)
-            a_resized = cv2.resize(a_rgb, (112, 112)) 
+            a_resized = cv2.resize(a_rgb, (112, 112))
             a_qt = QImage(a_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
+
             self.align_cap.setPixmap(QPixmap.fromImage(a_qt))
+            self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
 
-        # --- C. Update Log Window ---
-        update_log = metadata.get("update")
-        if update_log and distances:
-            sorted_candidates = sorted(distances.items(), key=lambda x: x[1])
+            # C. Check for valid distances before sorting
+            if distances:
+                sorted_candidates = sorted(distances.items(), key=lambda x: x[1])
+                best_filename, best_dist = sorted_candidates[0]
 
-            # 2. Print the Header
-            self.history_list.append(f"<b>{update_log}</b>")
-            self.history_list.append("<font color='#55FF55'>Ranked Candidates:</font>")
+                update_log = metadata.get("update")
+                if update_log:
+                    self.history_list.append(f"<b>{update_log}</b>")
+                    self.history_list.append("<font color='#55FF55'>Ranked Candidates:</font>")
+                    
+                    for i, (fname, d) in enumerate(sorted_candidates[:20]):
+                        color = "#FFFFFF" if i == 0 else "#888888"
+                        self.history_list.append(f"<font color='{color}' size='2'>&nbsp;&nbsp;{i+1}. {fname}: {d}</font>")
 
-            # 3. Print the Top 20
-            for i, (filename, dist) in enumerate(sorted_candidates[:20]):
-                # Visual hierarchy: First is bright, others are dimmed
-                color = "#FFFFFF" if i == 0 else "#888888"
-                
-                # Format: 1. kerem.jpg: 0.1234
-                match_line = f"&nbsp;&nbsp;{i+1}. {filename}: <b>{dist}</b>"
-                self.history_list.append(f"<font color='{color}' size='2'>{match_line}</font>")
-
-            # 4. CAPTURE FOR COMPARE BOX
-            best_match_filename = sorted_candidates[0][0]
+                # D. UPDATE COMPARE BOX (Biometric Reference)
+                if best_dist < 0.5: 
+                    person_dir = best_filename.rsplit("_", 1)[0]
+                    ref_path = os.path.join("assets", "faces", "raw_images", person_dir, best_filename)
+                    
+                    if os.path.exists(ref_path):
+                        ref_cv = cv2.imread(ref_path)
+                        if ref_cv is not None:
+                            ref_rgb = cv2.cvtColor(ref_cv, cv2.COLOR_BGR2RGB)
+                            ref_resized = cv2.resize(ref_rgb, (112, 112))
+                            r_h, r_w, r_ch = ref_resized.shape
+                            ref_qt = QImage(ref_resized.data, r_w, r_h, r_ch * r_w, QImage.Format.Format_RGB888)
+                            self.compare_cap.setPixmap(QPixmap.fromImage(ref_qt))

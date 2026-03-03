@@ -22,6 +22,10 @@ class SentryHUD(QMainWindow):
         self.init_ui()
         self.setup_connections() # method for wiring
 
+    ###################################################################################
+    #                                 LAYOUT
+    ###################################################################################
+     HEREH HREHRE HERE
     def init_ui(self):
         # Main Container
         self.central_widget = QWidget()
@@ -88,6 +92,11 @@ class SentryHUD(QMainWindow):
 
         log("SentryHUD Initialized", "INFO")
 
+    
+    ###################################################################################
+    #                                 BUTTONS
+    ###################################################################################
+
     def setup_connections(self):
         """ Define buttons and handlers here, so of them will delagate their jobs to the Worker"""
         self.stop_btn.clicked.connect(self.handle_stop)
@@ -97,11 +106,9 @@ class SentryHUD(QMainWindow):
         self.release_btn.clicked.connect(self.handle_lock_toggle)
         self.fire_btn.clicked.connect(self.handle_fire)
 
-        HERE HERE HERE
-
     def handle_stop(self):
-        # The worker handles the logic, just ask for the result
-        is_now_frozen = self.worker.toggle_freeze()
+        is_now_frozen = self.worker.toggle_freeze() # Worker logic
+
         if is_now_frozen:
             self.stop_btn.setText("RESUME")
             self.stop_btn.setStyleSheet("background-color: #444; color: yellow;")
@@ -112,10 +119,49 @@ class SentryHUD(QMainWindow):
             self.history_list.append("<font color='white'>[SYSTEM RESUMED]</font>")
 
     def handle_restart(self):
-        # 1. Clear the UI
         self.history_list.clear()
-        # 2. Tell the worker to clear the Brain
-        self.worker.reset_tracking_data()
+
+        self.worker.reset_tracking_data() # Worker logic
+
+        self.history_list.append("<b style='color:cyan;'>[SYSTEM] REBOOT SUCCESSFUL: MEMORY PURGED</b>")
+    
+    def handle_lock_toggle(self):
+        """Switch between Overwatch and Active Tracking"""
+        is_locked = self.worker.toggle_lock() # Worker logic
+        
+        if is_locked:
+            self.release_btn.setText("RELEASE")
+            self.history_list.append("<b style='color:orange;'>TURRET: LOCK-IN ACQUIRED</b>")
+        else:
+            self.release_btn.setText("LOCK-IN")
+            self.history_list.append("<i style='color:gray;'>TURRET: OVERWATCH MODE</i>")
+
+    def handle_next_target(self):
+        """Switch the current 'Enemy' to the next person in view"""
+        new_id = self.worker.switch_target(step=1) # Worker logic
+
+        if new_id is not None:
+            self.history_list.append(f"Target Switched: Now tracking ID {new_id}")
+        else:
+            self.history_list.append("<i style='color:gray;'>[WARN] No targets available to cycle</i>")
+
+    def handle_prev_target(self):
+        """Switch the current 'Enemy' to the previous person in view"""
+        new_id = self.worker.switch_target(step=-1) # Worker logic
+
+        if new_id is not None:
+            self.history_list.append(f"Target Switched: Now tracking ID {new_id}")
+        else:
+            self.history_list.append("<i style='color:gray;'>[WARN] No targets available to cycle</i>")
+
+    def handle_fire(self):
+        """Simulate engagement"""
+        self.worker.trigger_fire() # Worker logic
+        self.history_list.append("<b style='color:red;'>[ACTION] WEAPON SYSTEM: FIRE</b>")
+    
+    ###################################################################################
+    #                                 UI UPDATES
+    ###################################################################################
 
     def _create_preview_box(self, text):
         lbl = QLabel(text)
@@ -124,7 +170,7 @@ class SentryHUD(QMainWindow):
         lbl.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Plain)
         lbl.setStyleSheet("border: 1px solid #555; background-color: #222; color: white; font-size: 10px;")
         return lbl
-
+    
     def update_displays(self, main_frame, image_package, data_package):
         # 0. Extract data
         yolo_crop, retina_align = image_package[0], image_package[1]

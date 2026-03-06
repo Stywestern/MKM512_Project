@@ -6,12 +6,14 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import cv2
 import numpy as np
 import time
+import os
 
 # Modules
 import config
-from modules.utils import log
+from modules.utils import log, create_event
 from modules.detector import YOLODetector
 from modules.recognizer import TurretRecognizer
+from modules.controller import TurretController
 
 ###################################################################################
 
@@ -25,12 +27,13 @@ class VisionWorker(QThread):
         self.cam = camera_instance # Use the pre-started camera
         self.detector = YOLODetector()
         self.recognizer = TurretRecognizer()
+        self.controller = TurretController(simulation=True)
 
         self.active_targets = {} 
 
         self.running = True
         self.is_frozen = False
-        self.lock_requested = False
+        self.is_locking = False
         self.locked_target_id = None  # ID of the current "Enemy"
         self.is_firing = False
 
@@ -46,20 +49,19 @@ class VisionWorker(QThread):
             # --- POSSIBILITY 1: No Face Detected (Just send the frame) ---
             empty_img = np.array([], dtype=np.uint8)
             image_package = [empty_img, empty_img] # [YOLO_CROP, ALIGN_CROP]
-            update_log = None
-            distances = {} 
+            frame_events = [] # logging purposes
             
             # 1. Capture
             frame = self.cam.read()
             if frame is None or frame.size == 0:
                 self.msleep(10); continue
-
+        
             # 2. Scan
             if not self.is_frozen:
                 detections = self.detector.detect_and_track(frame)
-                current_ids = [d["id"] for d in detections]
-
+                
                 # Delete IDs from memory that YOLO no longer sees in this frame
+                current_ids = [d["id"] for d in detections]
                 for track_id in list(self.active_targets.keys()):
                     if track_id not in current_ids:
                         del self.active_targets[track_id]
@@ -73,59 +75,74 @@ class VisionWorker(QThread):
                 for target in detections:
                     track_id = target["id"]
                     x1, y1, x2, y2 = target["face_bbox"] # yolo box is here
+                    current_time = time.time()
 
-                    # --- POSSIBILITY 3: Brand New Target (Send frame, [yolo, aligned]) ---
-                    if track_id not in self.active_targets:
+                    # --- RECOGNITION LOGIC ---
+                    # Case A: Brand New Target
+                    is_new = track_id not in self.active_targets
+                    
+                    # Case B: Already Known, but 'Unknown' and 5 seconds have passed
+                    should_retry = False
+                    if not is_new:
+                        target_data = self.active_targets[track_id]
+                        if target_data["name"] == "Unknown":
+                            last_attempt = target_data.get("last_auth", 0)
+                            if (current_time - last_attempt) > 5.0:
+                                should_retry = True
+
+                    # --- POSSIBILITY 2: Brand New Target (Send frame, [yolo, aligned]) ---
+                    if is_new or should_retry:
                         h, w = frame.shape[:2]
                         x1c, y1c, x2c, y2c = max(0, x1), max(0, y1), min(w, x2), min(h, y2) # border protection
                         
                         # Capture crop
                         yolo_snap = frame[y1c:y2c, x1c:x2c].copy()
                         name, distances, aligned_face = self.recognizer.identify(yolo_snap)
-                        
-                        self.active_targets[track_id] = name
-                        update_log = f"ID {track_id} LATCHED: {name}"
+                        if aligned_face is None or aligned_face.size == 0: continue
 
-                        if name != "Unknown" and self.locked_target_id is None and self.lock_requested:
-                            self.locked_target_id = track_id
-                            update_log = f"ID {track_id} is the target"
-
-                        # Fill the package with both images
                         image_package = [yolo_snap, aligned_face]
+                        
+                        self.active_targets[track_id] = {"name": name, "last_auth": current_time}
 
-                        is_enemy = (track_id == self.locked_target_id)
-                        color = (0, 0, 255) if is_enemy else (0, 255, 0)
-                        thickness = 4 if (is_enemy and self.is_firing) else 2
-                    
-                    # --- POSSIBILITY 2: Already Tracking (Send frame, [yolo, empty]) ---
+                        best_filename = sorted(distances.items(), key=lambda x: x[1])[0][0]
+                        person_dir = best_filename.rsplit("_", 1)[0]
+                        ref_path = os.path.join("assets", "faces", "raw_images", person_dir, best_filename)
+                        frame_events.append(create_event("RECOGNITION", track_id=track_id, name=name, distances=distances, ref_path=ref_path))
+
+                    # --- POSSIBILITY 3: Already Tracking (Send frame, [yolo, empty]) ---
                     else:
                         # We still need to draw the box, but we don't update the snaps, image_package remains [empty_img, empty_img]
                         pass
+                    
+                    name = self.active_targets[track_id]["name"]
+                    if name != "Unknown" and self.locked_target_id is None and self.is_locking:
+                        self.locked_target_id = track_id
+                        is_enemy = True
+                        frame_events.append(create_event("LOCK", track_id=track_id, status="LOCKED"))
+
+                    # STATUS DETERMINATION (Must happen for everyone)
+                    is_enemy = (track_id == self.locked_target_id)
+                    color = (0, 0, 255) if is_enemy else (0, 255, 0)
+                    thickness = 4 if (is_enemy and self.is_firing) else 2
 
                     # Draw HUD on the main frame
-                    if is_enemy and self.is_firing:
-                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                        cv2.line(frame, (cx-20, cy), (cx+20, cy), (0, 0, 255), thickness)
-                        cv2.line(frame, (cx, cy-20), (cx, cy+20), (0, 0, 255), thickness)
-
-                    name = self.active_targets.get(track_id, "Scanning...")
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.rectangle(frame, (x1, y1 - 20), (x2, y1), color, -1)
                     cv2.putText(frame, f"{name} (ID:{track_id})", (x1 + 5, y1 - 5), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                    
+                    if is_enemy and self.is_firing:
+                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                        cv2.line(frame, (cx-20, cy), (cx+20, cy), (0, 0, 255), thickness)
+                        cv2.line(frame, (cx, cy-20), (cx, cy+20), (0, 0, 255), thickness)
 
             # 3. TELEMETRY & EMIT
             delta_time = loop_start - prev_time
             fps = 1.0 / delta_time if delta_time > 0 else 30.0
             prev_time = loop_start
 
-            metadata = {
-                "fps": round(fps, 1),
-                "update": update_log,
-            }
-
             # Pack the dictionaries
-            data_package = [metadata, distances]
+            data_package = [frame_events, round(fps, 1)]
 
             # Send the data
             self.update_signal.emit(frame, image_package, data_package)
@@ -140,6 +157,7 @@ class VisionWorker(QThread):
     ###################################################################################
 
     def toggle_freeze(self):
+        """ Stop the AI """
         self.is_frozen = not self.is_frozen
 
         if not self.is_frozen:
@@ -147,7 +165,7 @@ class VisionWorker(QThread):
         return self.is_frozen
 
     def reset_tracking_data(self):
-        """Clears all identified targets and active memory"""
+        """ Clears all identified targets and active memory """
         self.active_targets.clear()
         self.locked_target_id = None
         self.is_firing = False
@@ -181,29 +199,51 @@ class VisionWorker(QThread):
         Switches between Overwatch (No ID locked) and 
         Active Tracking (Latch onto the first available ID).
         """
-        self.lock_requested = not self.lock_requested
+        self.is_locking = not self.is_locking
 
-        # If the user is revoking permission, we must clear any current lock
-        if not self.lock_requested:
+        if not self.is_locking:
             self.locked_target_id = None
             self.is_firing = False
             log("TURRET: Lock Revoked. Returning to Overwatch.", "INFO")
         else:
-            self.locked_target_id = self.active_targets[0].key()
-            log("TURRET: Lock Requested. Seeking target", "WARNING")
+            active_ids = list(self.active_targets.keys())
             
-        return self.lock_requested
+            if len(active_ids) > 0:
+                # If people are already on screen, grab the first one
+                self.locked_target_id = active_ids[0]
+                log(f"TURRET: Lock Requested. Latching to ID {self.locked_target_id}", "WARNING")
+            else:
+                # Nobody is on screen yet
+                self.locked_target_id = None
+                log("TURRET: Lock Requested. No targets in sight, standing by...", "WARNING")
+        
+        return self.is_locking
 
     def trigger_fire(self):
         """Master trigger for engagement simulation"""
         if self.locked_target_id is not None:
             self.is_firing = not self.is_firing
-            status = "!!! ENGAGING !!!" if self.is_firing else "CEASE FIRE"
+            status = "FIRE" if self.is_firing else "CEASE FIRE"
+
             log(f"WEAPON SYSTEM: {status}", "WARNING")
         else:
             self.is_firing = False
             log("FIRE REJECTED: System requires active lock.", "ERROR")
             
         return self.is_firing
+    
+    ###################################################################################
+    #                              CONTROLLER EMIT
+    ###################################################################################
+
+    def transmit_to_controller(self, pan_error, tilt_error, fire_command):
+        """
+        Placeholder for PLC/Microcontroller communication.
+        pan_error: float (-1.0 to 1.0)
+        tilt_error: float (-1.0 to 1.0)
+        fire_command: bool
+        """
+
+        pass
 
     

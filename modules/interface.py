@@ -25,7 +25,7 @@ class SentryHUD(QMainWindow):
     ###################################################################################
     #                                 LAYOUT
     ###################################################################################
-     HEREH HREHRE HERE
+ 
     def init_ui(self):
         # Main Container
         self.central_widget = QWidget()
@@ -68,37 +68,60 @@ class SentryHUD(QMainWindow):
         self.video_label.setMinimumSize(640, 480)
         
         # 4. Control Buttons (Bottom)
-        self.btn_layout = QHBoxLayout()
+        self.controls_wrapper = QVBoxLayout() # Vertical container for all button rows
+
+        # --- ROW 1: PRIMARY ACTIONS ---
+        self.primary_btn_layout = QHBoxLayout()
         self.stop_btn = QPushButton("STOP")
-        self.next_btn = QPushButton(">>")
-        self.back_btn = QPushButton("<<")
         self.restart_btn = QPushButton("RESTART")
+        self.release_btn = QPushButton("LOCK-IN") # Starts as Lock-In per our logic
         self.fire_btn = QPushButton("FIRE")
-        self.release_btn = QPushButton("RELEASE")
 
+        # Style the primary buttons
+        for btn in [self.stop_btn, self.restart_btn, self.release_btn, self.fire_btn]:
+            btn.setMinimumHeight(45)
+            self.primary_btn_layout.addWidget(btn)
+
+        # --- ROW 2: TARGET NAVIGATION (Centered) ---
+        self.nav_btn_layout = QHBoxLayout()
+        self.back_btn = QPushButton("<<")
+        self.next_btn = QPushButton(">>")
         
-        for btn in [self.stop_btn, self.next_btn, self.back_btn, self.restart_btn]:
-            btn.setMinimumHeight(40)
-            self.btn_layout.addWidget(btn)
+        # Fix size for navigation to keep them tight in the middle
+        self.back_btn.setFixedSize(60, 40)
+        self.next_btn.setFixedSize(60, 40)
+        
+        # Add stretch on both sides to push them to the center
+        self.nav_btn_layout.addStretch()
+        self.nav_btn_layout.addWidget(self.back_btn)
+        self.nav_btn_layout.addWidget(self.next_btn)
+        self.nav_btn_layout.addStretch()
 
-        self.right_col.addWidget(self.video_label, 7) # 70% of right side
-        self.right_col.addLayout(self.btn_layout, 3)  # 30% of right side
+        # Combine Rows into the Wrapper
+        self.controls_wrapper.addLayout(self.primary_btn_layout)
+        self.controls_wrapper.addLayout(self.nav_btn_layout)
 
-        # Combine into Main Grid
+        # Add everything to Right Column
+        self.right_col.addWidget(self.video_label, 8)    # Increase camera weight to 80%
+        self.right_col.addLayout(self.controls_wrapper, 2) # Buttons take 20%
+
+        # Set the layout
         self.layout.addLayout(self.left_col, 0, 0)
         self.layout.addLayout(self.right_col, 0, 1)
         self.layout.setColumnStretch(0, 4)
         self.layout.setColumnStretch(1, 6)
 
-        log("SentryHUD Initialized", "INFO")
+        log("SentryHUD Layout Anchored", "INFO")
 
-    
     ###################################################################################
     #                                 BUTTONS
     ###################################################################################
 
     def setup_connections(self):
-        """ Define buttons and handlers here, so of them will delagate their jobs to the Worker"""
+        """
+        Define buttons and handlers here, some of them will delagate their jobs to the Worker as well.
+        Specifically, if a button manages UI elements, its logic stays in here, otherwise it goes to Worker class
+        """
         self.stop_btn.clicked.connect(self.handle_stop)
         self.restart_btn.clicked.connect(self.handle_restart)
         self.next_btn.clicked.connect(self.handle_next_target)
@@ -107,6 +130,7 @@ class SentryHUD(QMainWindow):
         self.fire_btn.clicked.connect(self.handle_fire)
 
     def handle_stop(self):
+        """ Stops the AI part, enabling us to see the camera unaltered (mostly for fps comparison) """
         is_now_frozen = self.worker.toggle_freeze() # Worker logic
 
         if is_now_frozen:
@@ -119,14 +143,14 @@ class SentryHUD(QMainWindow):
             self.history_list.append("<font color='white'>[SYSTEM RESUMED]</font>")
 
     def handle_restart(self):
-        self.history_list.clear()
+        """ Purge AI memory, forcing it to run recognition again on all faces """
+        #self.history_list.clear()
 
         self.worker.reset_tracking_data() # Worker logic
-
         self.history_list.append("<b style='color:cyan;'>[SYSTEM] REBOOT SUCCESSFUL: MEMORY PURGED</b>")
     
     def handle_lock_toggle(self):
-        """Switch between Overwatch and Active Tracking"""
+        """ Switch between Overwatch and Active Tracking"""
         is_locked = self.worker.toggle_lock() # Worker logic
         
         if is_locked:
@@ -156,8 +180,12 @@ class SentryHUD(QMainWindow):
 
     def handle_fire(self):
         """Simulate engagement"""
-        self.worker.trigger_fire() # Worker logic
-        self.history_list.append("<b style='color:red;'>[ACTION] WEAPON SYSTEM: FIRE</b>")
+        is_fire = self.worker.trigger_fire() # Worker logic
+
+        if is_fire:
+            self.history_list.append("<b style='color:red;'>[ACTION ACCEPTED] WEAPON SYSTEM: FIRE</b>")
+        else:
+            self.history_list.append("<b style='color:red;'>[ACTION REJECTED] WEAPON SYSTEMS OFFLINE </b>")
     
     ###################################################################################
     #                                 UI UPDATES
@@ -174,10 +202,9 @@ class SentryHUD(QMainWindow):
     def update_displays(self, main_frame, image_package, data_package):
         # 0. Extract data
         yolo_crop, retina_align = image_package[0], image_package[1]
-        metadata, distances = data_package[0], data_package[1]
+        logs, fps_val = data_package[0], data_package[1]
 
-        # 1. Update the Live Main Feed, covers Possibility 1, 2, and 3
-        fps_val = metadata.get("fps", 0)
+        # 1. Update the Live Main Feed
         cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
@@ -189,47 +216,51 @@ class SentryHUD(QMainWindow):
             self.video_label.width(), self.video_label.height(), 
             Qt.AspectRatioMode.KeepAspectRatio))
 
-        # 2. POSSIBILITY 3 ONLY: Brand New Target (Get frame, [yolo, aligned])
-        if yolo_crop.size > 0 and retina_align.size > 0:
+        # 2. LOG PARSING
+        for event in logs:
+            # 1. Print the header (e.g., [IDENTITY] ID 5: Kerem)
+            self.history_list.append(event.get("html", ""))
             
-            # A. Update YOLO & ALIGN boxes
+            # 2. If it's recognition, do our old-school sorting and printing
+            if event["type"] == "RECOGNITION":
+                dists = event["metadata"].get("distances", {})
+                
+                if dists:
+                    sorted_candidates = sorted(dists.items(), key=lambda x: x[1])
+                    self.history_list.append("<font color='#55FF55'>&nbsp;&nbsp;Ranked Candidates:</font>")
+                    
+                    for i, (fname, d) in enumerate(sorted_candidates[:20]): # Top 20
+                        color = "#FFFFFF" if i == 0 else "#888888"
+                        self.history_list.append(
+                            f"<font color='{color}' size='2'>&nbsp;&nbsp;&nbsp;&nbsp;{i+1}. {fname}: {d:.4f}</font>"
+                        )
+
+        # 3. POSSIBILITY 3: Update Visual Crops
+        if yolo_crop.size > 0 and retina_align.size > 0:
+            # A. Update YOLO Box
             y_rgb = cv2.cvtColor(yolo_crop, cv2.COLOR_BGR2RGB)
             y_resized = cv2.resize(y_rgb, (112, 112))
             y_qt = QImage(y_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
             self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
 
-            # B. Update ALIGN CAP (RetinaFace Output)
+            # B. Update ALIGN Box
             a_rgb = cv2.cvtColor(retina_align, cv2.COLOR_BGR2RGB)
             a_resized = cv2.resize(a_rgb, (112, 112))
             a_qt = QImage(a_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
-
             self.align_cap.setPixmap(QPixmap.fromImage(a_qt))
-            self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
 
-            # C. Check for valid distances before sorting
-            if distances:
-                sorted_candidates = sorted(distances.items(), key=lambda x: x[1])
-                best_filename, best_dist = sorted_candidates[0]
-
-                update_log = metadata.get("update")
-                if update_log:
-                    self.history_list.append(f"<b>{update_log}</b>")
-                    self.history_list.append("<font color='#55FF55'>Ranked Candidates:</font>")
-                    
-                    for i, (fname, d) in enumerate(sorted_candidates[:20]):
-                        color = "#FFFFFF" if i == 0 else "#888888"
-                        self.history_list.append(f"<font color='{color}' size='2'>&nbsp;&nbsp;{i+1}. {fname}: {d}</font>")
-
-                # D. UPDATE COMPARE BOX (Biometric Reference)
-                if best_dist < 0.5: 
-                    person_dir = best_filename.rsplit("_", 1)[0]
-                    ref_path = os.path.join("assets", "faces", "raw_images", person_dir, best_filename)
-                    
-                    if os.path.exists(ref_path):
-                        ref_cv = cv2.imread(ref_path)
-                        if ref_cv is not None:
-                            ref_rgb = cv2.cvtColor(ref_cv, cv2.COLOR_BGR2RGB)
-                            ref_resized = cv2.resize(ref_rgb, (112, 112))
-                            r_h, r_w, r_ch = ref_resized.shape
-                            ref_qt = QImage(ref_resized.data, r_w, r_h, r_ch * r_w, QImage.Format.Format_RGB888)
-                            self.compare_cap.setPixmap(QPixmap.fromImage(ref_qt))
+            # C. Update COMPARE Box (Reference Photo)
+            ref_path = None
+            for event in reversed(logs):
+                if event["type"] == "RECOGNITION":
+                    ref_path = event["metadata"].get("ref_path")
+                    break
+            
+            ref_cv = cv2.imread(ref_path)
+            if ref_cv is not None:
+                ref_rgb = cv2.cvtColor(ref_cv, cv2.COLOR_BGR2RGB)
+                ref_resized = cv2.resize(ref_rgb, (112, 112))
+                r_h, r_w, r_ch = ref_resized.shape
+                
+                ref_qt = QImage(ref_resized.data, r_w, r_h, r_ch * r_w, QImage.Format.Format_RGB888)
+                self.compare_cap.setPixmap(QPixmap.fromImage(ref_qt))

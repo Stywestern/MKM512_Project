@@ -57,8 +57,6 @@ def update_embeddings():
             
             #cv2.imshow("padded", source_to_use)
             #cv2.waitKey(0)
-
-            bboxes, kpss = det_model.detect(source_to_use, max_num=1)
             
             if bboxes.shape[0] == 0:
                 print(f"Warning: No face found in {image_name}")

@@ -11,7 +11,8 @@ import os
 # Modules
 import config
 from modules.utils import log, create_event
-from modules.detector import YOLODetector
+from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
+from modules.tracker import BoTSORTTracker, ByteTrackTracker
 from modules.recognizer import TurretRecognizer
 from modules.controller import TurretController
 
@@ -25,7 +26,8 @@ class VisionWorker(QThread):
     def __init__(self, camera_instance):
         super().__init__()
         self.cam = camera_instance # Use the pre-started camera
-        self.detector = YOLODetector()
+        self.detector = SCRFDDetector() # RetinaDetector, SCRFDDetector, YOLODetector
+        self.tracker = BoTSORTTracker() # ByteTrackTracker
         self.recognizer = TurretRecognizer()
         self.controller = TurretController(simulation=True)
 
@@ -58,7 +60,11 @@ class VisionWorker(QThread):
         
             # 2. Scan
             if not self.is_frozen:
-                detections = self.detector.detect_and_track(frame)
+                # Step A: Get raw [x1, y1, x2, y2, conf], and facial landmarks from detector
+                raw_boxes, landmarks = self.detector.detect(frame)
+                
+                # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
+                detections = self.tracker.update(raw_boxes, frame)
                 
                 # Delete IDs from memory that YOLO no longer sees in this frame
                 current_ids = [d["id"] for d in detections]
@@ -72,9 +78,11 @@ class VisionWorker(QThread):
                             self.is_firing = False
                             log(f"TARGET LOST: ID {track_id} removed from active memory.", "INFO")
 
-                for target in detections:
+                for idx, target in enumerate(detections):
                     track_id = target["id"]
-                    x1, y1, x2, y2 = target["face_bbox"] # yolo box is here
+                    face_landmarks = landmarks[idx] 
+                    x1, y1, x2, y2 = target["face_bbox"] # detection box is here
+
                     current_time = time.time()
 
                     # --- RECOGNITION LOGIC ---
@@ -90,17 +98,18 @@ class VisionWorker(QThread):
                             if (current_time - last_attempt) > 5.0:
                                 should_retry = True
 
-                    # --- POSSIBILITY 2: Brand New Target (Send frame, [yolo, aligned]) ---
+                    # --- POSSIBILITY 2: Brand New Target (Send frame, [crop, aligned]) ---
                     if is_new or should_retry:
                         h, w = frame.shape[:2]
                         x1c, y1c, x2c, y2c = max(0, x1), max(0, y1), min(w, x2), min(h, y2) # border protection
+                        detector_crop = frame[y1c:y2c, x1c:x2c].copy()
                         
-                        # Capture crop
-                        yolo_snap = frame[y1c:y2c, x1c:x2c].copy()
-                        name, distances, aligned_face = self.recognizer.identify(yolo_snap)
+                        # Recognition
+                        name, distances, aligned_face = self.recognizer.identify(frame, face_landmarks)
                         if aligned_face is None or aligned_face.size == 0: continue
 
-                        image_package = [yolo_snap, aligned_face]
+                        # Sending format
+                        image_package = [detector_crop, aligned_face]
                         
                         self.active_targets[track_id] = {"name": name, "last_auth": current_time}
 
@@ -109,7 +118,7 @@ class VisionWorker(QThread):
                         ref_path = os.path.join("assets", "faces", "raw_images", person_dir, best_filename)
                         frame_events.append(create_event("RECOGNITION", track_id=track_id, name=name, distances=distances, ref_path=ref_path))
 
-                    # --- POSSIBILITY 3: Already Tracking (Send frame, [yolo, empty]) ---
+                    # --- POSSIBILITY 3: Already Tracking (Send frame, [crop, empty]) ---
                     else:
                         # We still need to draw the box, but we don't update the snaps, image_package remains [empty_img, empty_img]
                         pass

@@ -9,6 +9,7 @@ env/
 
 # Project-specific Data (Don't push these!)
 assets/faces/raw_images/
+assets/faces/debug_aligned/
 assets/faces/embeddings/*.pkl
 
 # Models (Too heavy for GitHub)

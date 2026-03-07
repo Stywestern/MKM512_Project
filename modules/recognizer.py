@@ -73,7 +73,10 @@ class TurretRecognizer:
 
         for entry in self.db_:
             # Dot product of normalized vectors = Cosine Similarity
-            similarity = np.dot(current_embedding, entry["embedding"])
+            curr_vec = current_embedding.flatten()
+            db_vec = entry["embedding"].flatten()
+
+            similarity = np.dot(curr_vec, db_vec)
             dist = float(1.0 - similarity.item())
             
             origin_key = entry["origin"] 

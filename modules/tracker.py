@@ -37,8 +37,10 @@ class BaseTracker(ABC):
 class BoTSORTTracker(BaseTracker):
     def __init__(self):
         self.device = 0 if config.RUN_ON_GPU else 'cpu'
+        model_path = os.path.join("assets", "models", "osnet_x0_25_msmt17.pt")
+
         self.tracker = BotSort(
-            reid_weights=Path('osnet_x0_25_msmt17.pt'), 
+            reid_weights=model_path, 
             device=self.device, 
             half=False
         )

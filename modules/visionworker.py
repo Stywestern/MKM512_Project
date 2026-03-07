@@ -55,16 +55,17 @@ class VisionWorker(QThread):
             
             # 1. Capture
             frame = self.cam.read()
+            clean_frame = frame.copy() # same frame without drawings for UI, I will pass this to AI
             if frame is None or frame.size == 0:
                 self.msleep(10); continue
         
             # 2. Scan
             if not self.is_frozen:
                 # Step A: Get raw [x1, y1, x2, y2, conf], and facial landmarks from detector
-                raw_boxes, landmarks = self.detector.detect(frame)
+                raw_boxes, landmarks = self.detector.detect(clean_frame)
                 
                 # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
-                detections = self.tracker.update(raw_boxes, frame)
+                detections = self.tracker.update(raw_boxes, clean_frame)
                 
                 # Delete IDs from memory that YOLO no longer sees in this frame
                 current_ids = [d["id"] for d in detections]
@@ -78,10 +79,13 @@ class VisionWorker(QThread):
                             self.is_firing = False
                             log(f"TARGET LOST: ID {track_id} removed from active memory.", "INFO")
 
-                for idx, target in enumerate(detections):
+                for target in detections:
                     track_id = target["id"]
-                    face_landmarks = landmarks[idx] 
+                    tx, ty = target["center"]
                     x1, y1, x2, y2 = target["face_bbox"] # detection box is here
+
+                    lm_idx = np.argmin([np.linalg.norm(np.array([tx, ty]) - np.mean(lm, axis=0)) for lm in landmarks]) # tracker messes the order so I recheck the get the correct one
+                    face_landmarks = landmarks[lm_idx]
 
                     current_time = time.time()
 
@@ -105,7 +109,7 @@ class VisionWorker(QThread):
                         detector_crop = frame[y1c:y2c, x1c:x2c].copy()
                         
                         # Recognition
-                        name, distances, aligned_face = self.recognizer.identify(frame, face_landmarks)
+                        name, distances, aligned_face = self.recognizer.identify(clean_frame, face_landmarks)
                         if aligned_face is None or aligned_face.size == 0: continue
 
                         # Sending format
@@ -115,7 +119,7 @@ class VisionWorker(QThread):
 
                         best_filename = sorted(distances.items(), key=lambda x: x[1])[0][0]
                         person_dir = best_filename.rsplit("_", 1)[0]
-                        ref_path = os.path.join("assets", "faces", "raw_images", person_dir, best_filename)
+                        ref_path = os.path.join("assets", "faces", "debug_aligned", person_dir, f"aligned_{best_filename}")
                         frame_events.append(create_event("RECOGNITION", track_id=track_id, name=name, distances=distances, ref_path=ref_path))
 
                     # --- POSSIBILITY 3: Already Tracking (Send frame, [crop, empty]) ---

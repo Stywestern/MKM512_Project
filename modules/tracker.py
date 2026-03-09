@@ -42,8 +42,19 @@ class BoTSORTTracker(BaseTracker):
         self.tracker = BotSort(
             reid_weights=model_path, 
             device=self.device, 
-            half=False
+            half=False,
+
+            # --- Tweakable Parameters ---
+            track_high_thresh=0.45, # Lower this slightly so it's easier to START a track
+            track_low_thresh=0.1,  # Keep tracking even if detection score is 10%
+            new_track_thresh=0.6,  # Be strict about NEW IDs to prevent ghosts
+            track_buffer=60,       # Remember the face for 60 frames (~2 seconds) after it vanishes
+            match_thresh=0.85,     # Increase Re-ID weight to favor "look" over "position"
+            proximity_thresh=0.5,  # Spatial distance threshold
+            appearance_thresh=0.25, # Feature distance threshold
+            cmc_method='orb'       # Compensates for the turret's own movements
         )
+
         log("Tracker: BoT-SORT Block Initialized.", "INFO")
 
     def update(self, raw_detections, frame):

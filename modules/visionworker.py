@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import time
 import os
+from collections import deque
 
 # Modules
 import config
@@ -31,7 +32,10 @@ class VisionWorker(QThread):
         self.recognizer = TurretRecognizer()
         self.controller = TurretController(simulation=True)
 
-        self.active_targets = {} 
+        self.active_targets = {}
+
+        self.box_window_size = 6 # Tuning: Higher = Smoother, but more lag
+        self.box_history = {}    # {track_id: deque(maxlen=6)}
 
         self.running = True
         self.is_frozen = False
@@ -67,11 +71,12 @@ class VisionWorker(QThread):
                 # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
                 detections = self.tracker.update(raw_boxes, clean_frame)
                 
-                # Delete IDs from memory that YOLO no longer sees in this frame
+                # Delete IDs from memory that Detector no longer sees in this frame
                 current_ids = [d["id"] for d in detections]
                 for track_id in list(self.active_targets.keys()):
                     if track_id not in current_ids:
                         del self.active_targets[track_id]
+                        del self.box_history[track_id]
 
                         # If our 'Enemy' is no longer in the active targets, release the lock
                         if track_id == self.locked_target_id:
@@ -81,10 +86,23 @@ class VisionWorker(QThread):
 
                 for target in detections:
                     track_id = target["id"]
-                    tx, ty = target["center"]
-                    x1, y1, x2, y2 = target["face_bbox"] # detection box is here
+                    new_box = np.array(target["face_bbox"], dtype=float)
 
-                    lm_idx = np.argmin([np.linalg.norm(np.array([tx, ty]) - np.mean(lm, axis=0)) for lm in landmarks]) # tracker messes the order so I recheck the get the correct one
+                    if track_id not in self.box_history:
+                        self.box_history[track_id] = deque(maxlen=self.box_window_size)
+                    
+                    # Add the current detection to the sliding window
+                    self.box_history[track_id].append(new_box)
+
+                    # CALCULATE MOVING AVERAGE
+                    smoothed_box = np.mean(self.box_history[track_id], axis=0).astype(int)
+                    sx1, sy1, sx2, sy2 = smoothed_box
+
+                    target["face_bbox"] = [sx1, sy1, sx2, sy2]
+                    target["center"] = ((sx1 + sx2) // 2, (sy1 + sy2) // 2)
+                    stx, sty = target["center"][0], target["center"][1]
+
+                    lm_idx = np.argmin([np.linalg.norm(np.array([stx, sty]) - np.mean(lm, axis=0)) for lm in landmarks]) # tracker messes the order so I recheck the get the correct one
                     face_landmarks = landmarks[lm_idx]
 
                     current_time = time.time()
@@ -105,8 +123,8 @@ class VisionWorker(QThread):
                     # --- POSSIBILITY 2: Brand New Target (Send frame, [crop, aligned]) ---
                     if is_new or should_retry:
                         h, w = frame.shape[:2]
-                        x1c, y1c, x2c, y2c = max(0, x1), max(0, y1), min(w, x2), min(h, y2) # border protection
-                        detector_crop = frame[y1c:y2c, x1c:x2c].copy()
+                        x1c, y1c, x2c, y2c = max(0, sx1), max(0, sy1), min(w, sx2), min(h, sy2) # border protection
+                        detector_crop = clean_frame[y1c:y2c, x1c:x2c].copy()
                         
                         # Recognition
                         name, distances, aligned_face = self.recognizer.identify(clean_frame, face_landmarks)
@@ -128,24 +146,35 @@ class VisionWorker(QThread):
                         pass
                     
                     name = self.active_targets[track_id]["name"]
-                    if name != "Unknown" and self.locked_target_id is None and self.is_locking:
+                    if name != "Unknown" and self.locked_target_id is None and self.is_locking and affiliation == "ENEMY":
                         self.locked_target_id = track_id
-                        is_enemy = True
                         frame_events.append(create_event("LOCK", track_id=track_id, status="LOCKED"))
 
                     # STATUS DETERMINATION (Must happen for everyone)
+                    # 1. Determine Affiliation
+                    if name in config.ENEMIES:
+                        affiliation = "ENEMY"
+                        color = config.COLOR_ENEMY
+                    elif name in config.FRIENDS:
+                        affiliation = "FRIEND"
+                        color = config.COLOR_FRIEND
+                    else:
+                        affiliation = "STRANGER"
+                        color = config.COLOR_STRANGER
+
                     is_enemy = (track_id == self.locked_target_id)
-                    color = (0, 0, 255) if is_enemy else (0, 255, 0)
                     thickness = 4 if (is_enemy and self.is_firing) else 2
 
                     # Draw HUD on the main frame
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.rectangle(frame, (x1, y1 - 20), (x2, y1), color, -1)
-                    cv2.putText(frame, f"{name} (ID:{track_id})", (x1 + 5, y1 - 5), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                    cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
+                    cv2.rectangle(frame, (sx1, sy1 - 20), (sx2, sy1), color, -1)
+
+                    display_text = f"{affiliation}: {name} (ID:{track_id})"
+                    cv2.putText(frame, display_text, (sx1 + 5, sy1 - 7), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                     
                     if is_enemy and self.is_firing:
-                        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                        cx, cy = (sx1 + sx2) // 2, (sy1 + sy2) // 2
                         cv2.line(frame, (cx-20, cy), (cx+20, cy), (0, 0, 255), thickness)
                         cv2.line(frame, (cx, cy-20), (cx, cy+20), (0, 0, 255), thickness)
 
@@ -185,21 +214,29 @@ class VisionWorker(QThread):
         log("SYSTEM REBOOT: Tracking memory cleared.", "INFO")
 
     def switch_target(self, step=1):
-        """Cycles the locked_target_id through the currently active dictionary keys"""
-        if not self.active_targets:
+        """Cycles the locked_target_id only through ENEMY targets"""
+        # 1. Filter active IDs to find only confirmed ENEMIES
+        enemy_ids = [
+            tid for tid, data in self.active_targets.items() 
+            if data["name"] in config.ENEMIES
+        ]
+
+        if not enemy_ids:
+            log("SWITCH REJECTED: No enemy targets in memory.", "WARNING")
+            self.locked_target_id = None
             return None
 
-        # Get the list of IDs currently 'alive' in memory
-        active_ids = list(self.active_targets.keys())
-
         try:
-            if self.locked_target_id in active_ids:
-                current_idx = active_ids.index(self.locked_target_id)
-                next_idx = (current_idx + step) % len(active_ids)
-                self.locked_target_id = active_ids[next_idx]
+            # 2. If already locked on an enemy, find the next one in the list
+            if self.locked_target_id in enemy_ids:
+                current_idx = enemy_ids.index(self.locked_target_id)
+                next_idx = (current_idx + step) % len(enemy_ids)
+                self.locked_target_id = enemy_ids[next_idx]
             else:
-                # If no lock exists or target disappeared, pick the first available
-                self.locked_target_id = active_ids[0]
+                # 3. If lock was lost or on a non-enemy, grab the first available enemy
+                self.locked_target_id = enemy_ids[0]
+
+            log(f"SWITCHED: Locked onto ENEMY ID {self.locked_target_id}", "WARNING")
 
         except Exception as e:
             log(f"Switch Error: {e}", "ERROR")
@@ -208,10 +245,7 @@ class VisionWorker(QThread):
         return self.locked_target_id
     
     def toggle_lock(self):
-        """
-        Switches between Overwatch (No ID locked) and 
-        Active Tracking (Latch onto the first available ID).
-        """
+        """Toggle Active Tracking (Latches ONLY onto Enemies)"""
         self.is_locking = not self.is_locking
 
         if not self.is_locking:
@@ -219,26 +253,33 @@ class VisionWorker(QThread):
             self.is_firing = False
             log("TURRET: Lock Revoked. Returning to Overwatch.", "INFO")
         else:
-            active_ids = list(self.active_targets.keys())
+            # Filter for enemies only
+            enemy_ids = [
+                tid for tid, data in self.active_targets.items() 
+                if data["name"] in config.ENEMIES
+            ]
             
-            if len(active_ids) > 0:
-                # If people are already on screen, grab the first one
-                self.locked_target_id = active_ids[0]
-                log(f"TURRET: Lock Requested. Latching to ID {self.locked_target_id}", "WARNING")
+            if enemy_ids:
+                self.locked_target_id = enemy_ids[0]
+                log(f"TURRET: Lock Requested. Latching to ENEMY ID {self.locked_target_id}", "WARNING")
             else:
-                # Nobody is on screen yet
                 self.locked_target_id = None
-                log("TURRET: Lock Requested. No targets in sight, standing by...", "WARNING")
+                log("TURRET: Lock Requested. No ENEMIES in sight, standing by...", "WARNING")
         
         return self.is_locking
 
     def trigger_fire(self):
-        """Master trigger for engagement simulation"""
+        """Master trigger: Only works if locked target is an ENEMY"""
         if self.locked_target_id is not None:
-            self.is_firing = not self.is_firing
-            status = "FIRE" if self.is_firing else "CEASE FIRE"
-
-            log(f"WEAPON SYSTEM: {status}", "WARNING")
+            # Double-check affiliation before pulling the trigger
+            target_data = self.active_targets.get(self.locked_target_id)
+            if target_data and target_data["name"] in config.ENEMIES:
+                self.is_firing = not self.is_firing
+                status = "FIRE" if self.is_firing else "CEASE FIRE"
+                log(f"WEAPON SYSTEM: {status}", "WARNING")
+            else:
+                self.is_firing = False
+                log("FIRE REJECTED: Current lock is NOT an enemy!", "ERROR")
         else:
             self.is_firing = False
             log("FIRE REJECTED: System requires active lock.", "ERROR")

@@ -124,7 +124,11 @@ class SCRFDDetector(BaseDetector):
         # Using InsightFace's model zoo for SCRFD as well
         ctx_id = 0 if config.RUN_ON_GPU else -1
         self.model = get_model(model_path, providers=['CUDAExecutionProvider' if config.RUN_ON_GPU else 'CPUExecutionProvider'])
-        self.model.prepare(ctx_id=ctx_id, input_size=(640, 640))
+        self.model.prepare(
+                ctx_id=ctx_id,
+                input_size=(640, 640),
+                det_thresh=self.threshold_
+            )
 
         log("SCRFD Detector initialized.", "INFO")
 

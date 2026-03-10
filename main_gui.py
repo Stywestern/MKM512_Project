@@ -8,12 +8,12 @@ try:
 except Exception as e:
     print(f"Pre-import warning: {e}")
 
-
 ##################################### Imports #####################################
-# Libraries
-import os
+
+# Standart Libraries
 import sys
 
+# Third Party Libraries
 from PyQt6.QtWidgets import QApplication
 
 # Modules
@@ -26,11 +26,11 @@ from modules.utils import log
 
 def main():
     log("Initializing QApplication... ", "INFO")
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv) # app init
     log("App initialized", "INFO")
 
     log("Initializing CameraStream... ", "INFO")
-    shared_cam = CameraStream().start()
+    shared_cam = CameraStream().start() # cam init
     
     # 1. Create instances
     log("Initializing VisionWorker... ", "INFO")
@@ -50,7 +50,8 @@ def main():
     log("Starting Sentry Subsystem...", "INFO")
     worker.start()
     
-    sys.exit(app.exec())
+    # 4. Kill
+    sys.exit(app.exec()) 
 
 if __name__ == "__main__":
     main()

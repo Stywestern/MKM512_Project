@@ -66,7 +66,7 @@ class VisionWorker(QThread):
             # 2. Scan
             if not self.is_frozen:
                 # Step A: Get raw [x1, y1, x2, y2, conf], and facial landmarks from detector
-                raw_boxes, landmarks = self.detector.detect(clean_frame)
+                raw_boxes, landmarks, raw_distances = self.detector.detect(clean_frame)
                 
                 # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
                 detections = self.tracker.update(raw_boxes, clean_frame)
@@ -94,7 +94,7 @@ class VisionWorker(QThread):
                     # Add the current detection to the sliding window
                     self.box_history[track_id].append(new_box)
 
-                    # CALCULATE MOVING AVERAGE
+                    # Moving Avarage calc
                     smoothed_box = np.mean(self.box_history[track_id], axis=0).astype(int)
                     sx1, sy1, sx2, sy2 = smoothed_box
 
@@ -105,13 +105,16 @@ class VisionWorker(QThread):
                     lm_idx = np.argmin([np.linalg.norm(np.array([stx, sty]) - np.mean(lm, axis=0)) for lm in landmarks]) # tracker messes the order so I recheck the get the correct one
                     face_landmarks = landmarks[lm_idx]
 
-                    current_time = time.time()
+                    current_dist = None
+                    if lm_idx is not None:
+                        current_dist = raw_distances[lm_idx]
 
                     # --- RECOGNITION LOGIC ---
                     # Case A: Brand New Target
                     is_new = track_id not in self.active_targets
                     
                     # Case B: Already Known, but 'Unknown' and 5 seconds have passed
+                    current_time = time.time()
                     should_retry = False
                     if not is_new:
                         target_data = self.active_targets[track_id]
@@ -133,7 +136,7 @@ class VisionWorker(QThread):
                         # Sending format
                         image_package = [detector_crop, aligned_face]
                         
-                        self.active_targets[track_id] = {"name": name, "last_auth": current_time}
+                        self.active_targets[track_id] = {"name": name, "last_auth": current_time, "distance": current_dist or 200.0}
 
                         best_filename = sorted(distances.items(), key=lambda x: x[1])[0][0]
                         person_dir = best_filename.rsplit("_", 1)[0]
@@ -143,7 +146,8 @@ class VisionWorker(QThread):
                     # --- POSSIBILITY 3: Already Tracking (Send frame, [crop, empty]) ---
                     else:
                         # We still need to draw the box, but we don't update the snaps, image_package remains [empty_img, empty_img]
-                        pass
+                        if current_dist is not None:
+                            self.active_targets[track_id]["distance"] = current_dist
                     
                     name = self.active_targets[track_id]["name"]
                     if name != "Unknown" and self.locked_target_id is None and self.is_locking and affiliation == "ENEMY":
@@ -169,7 +173,7 @@ class VisionWorker(QThread):
                     cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
                     cv2.rectangle(frame, (sx1, sy1 - 20), (sx2, sy1), color, -1)
 
-                    display_text = f"{affiliation}: {name} (ID:{track_id})"
+                    display_text = f"{affiliation}: {name} (ID:{track_id})(DIST: {current_dist:.1f}cm)"
                     cv2.putText(frame, display_text, (sx1 + 5, sy1 - 7), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                     
@@ -193,6 +197,10 @@ class VisionWorker(QThread):
             processing_time = time.time() - loop_start
             sleep_duration = max(1, int((0.0333 - processing_time) * 1000))
             self.msleep(sleep_duration)
+
+    ###################################################################################
+    #                                 HELPER METHODS
+    ###################################################################################
         
     ###################################################################################
     #                                 BUTTON LOGIC

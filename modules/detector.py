@@ -120,6 +120,9 @@ class SCRFDDetector(BaseDetector):
         # SCRFD is usually distributed as an ONNX model
         model_path = os.path.join("assets", "models", "scrfd_10g_bnkps.onnx")
         self.threshold_ = threshold
+
+        self.focal_length = config.FOCAL_LENGTH # Get from your 200cm calibration
+        self.real_ipd = 6.3 # Average human eye distance in cm
         
         # Using InsightFace's model zoo for SCRFD as well
         ctx_id = 0 if config.RUN_ON_GPU else -1
@@ -131,6 +134,22 @@ class SCRFDDetector(BaseDetector):
             )
 
         log("SCRFD Detector initialized.", "INFO")
+
+
+    def calculate_distance(self, landmarks):
+        """Internal helper for IPD math"""
+        if landmarks is None or len(landmarks) < 2:
+            return None
+        
+        # 0: Left Eye, 1: Right Eye
+        p1, p2 = landmarks[0], landmarks[1]
+        pixel_dist = np.linalg.norm(p1 - p2)
+        
+        if pixel_dist < 1.0: return None
+        
+        # Distance = (Real_Width * Focal_Length) / Pixel_Width
+        return round((self.real_ipd * self.focal_length) / pixel_dist, 1)
+
 
     def detect(self, frame):
         """
@@ -147,5 +166,8 @@ class SCRFDDetector(BaseDetector):
         # Format for Tracker (BoxMOT needs Nx6)
         detections = np.zeros((bboxes.shape[0], 6))
         detections[:, :5] = bboxes
+
+        # Calculate distance for every detected face
+        distances = [self.calculate_distance(k) for k in kpss]
         
-        return detections, kpss
+        return detections, kpss, distances

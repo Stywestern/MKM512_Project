@@ -1,12 +1,15 @@
 # modules/interface.py
 
 ##################################### Imports #####################################
-# Libraries
+
+# Standart Libraries
+import sys
+
+# Third Party Libraries
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QGridLayout, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QTextEdit)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 import cv2
-import os
 
 # Modules
 import config
@@ -14,13 +17,14 @@ from modules.utils import log
 
 ###################################################################################
 
+
 class SentryHUD(QMainWindow):
     def __init__(self, worker_ref):
         super().__init__()
         self.worker = worker_ref 
         self.setWindowTitle("Sentry Command Center")
         self.init_ui()
-        self.setup_connections() # method for wiring
+        self.setup_connections() # map UI buttons to logic handlers
 
     ###################################################################################
     #                                 LAYOUT
@@ -37,18 +41,18 @@ class SentryHUD(QMainWindow):
         # --- LEFT COLUMN: DATA & PIPELINE (Width Factor: 4) ---
         self.left_col = QVBoxLayout()
 
-        # 1. Pipeline Visuals [YOLO | ALIGN | COMPARE]
+        # A. Pipeline Visuals [DETECT | ALIGN | COMPARE]
         self.pipeline_layout = QHBoxLayout()
-        self.yolo_cap = self._create_preview_box("YOLO")
+        self.detect_cap = self._create_preview_box("DETECT")
         self.align_cap = self._create_preview_box("ALIGN")
         self.compare_cap = self._create_preview_box("COMPARE")
         
-        self.pipeline_layout.addWidget(self.yolo_cap)
+        self.pipeline_layout.addWidget(self.detect_cap)
         self.pipeline_layout.addWidget(self.align_cap)
         self.pipeline_layout.addWidget(self.compare_cap)
         self.left_col.addLayout(self.pipeline_layout)
 
-        # 2. Detection History
+        # B. Detection History
         self.history_label = QLabel("DETECTION HISTORY")
         self.history_label.setStyleSheet("font-weight: bold; color: #00FF00;")
         self.history_list = QTextEdit()
@@ -61,20 +65,20 @@ class SentryHUD(QMainWindow):
         # --- RIGHT COLUMN: CAMERA & CONTROLS (Width Factor: 6) ---
         self.right_col = QVBoxLayout()
 
-        # 3. Main Camera (Top 40% of the right side essentially)
+        # A. Main Camera (Top 40% of the right side essentially)
         self.video_label = QLabel("INITIALIZING CAMERA...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet("background-color: black; border: 2px solid #333;")
         self.video_label.setMinimumSize(640, 480)
         
-        # 4. Control Buttons (Bottom)
+        # B. Control Buttons (Bottom)
         self.controls_wrapper = QVBoxLayout() # Vertical container for all button rows
 
-        # --- ROW 1: PRIMARY ACTIONS ---
+            # --- ROW 1: PRIMARY ACTIONS ---
         self.primary_btn_layout = QHBoxLayout()
-        self.stop_btn = QPushButton("STOP")
+        self.stop_btn = QPushButton("STOP") # Switch between STOP and RESUME
         self.restart_btn = QPushButton("RESTART")
-        self.release_btn = QPushButton("LOCK-IN") # Starts as Lock-In per our logic
+        self.release_btn = QPushButton("LOCK-IN") # Switch between LOCK-IN and RELEASE
         self.fire_btn = QPushButton("FIRE")
 
         # Style the primary buttons
@@ -82,16 +86,13 @@ class SentryHUD(QMainWindow):
             btn.setMinimumHeight(45)
             self.primary_btn_layout.addWidget(btn)
 
-        # --- ROW 2: TARGET NAVIGATION (Centered) ---
+            # --- ROW 2: TARGET NAVIGATION (Centered) ---
         self.nav_btn_layout = QHBoxLayout()
         self.back_btn = QPushButton("<<")
         self.next_btn = QPushButton(">>")
         
-        # Fix size for navigation to keep them tight in the middle
         self.back_btn.setFixedSize(60, 40)
         self.next_btn.setFixedSize(60, 40)
-        
-        # Add stretch on both sides to push them to the center
         self.nav_btn_layout.addStretch()
         self.nav_btn_layout.addWidget(self.back_btn)
         self.nav_btn_layout.addWidget(self.next_btn)
@@ -105,7 +106,7 @@ class SentryHUD(QMainWindow):
         self.right_col.addWidget(self.video_label, 8)    # Increase camera weight to 80%
         self.right_col.addLayout(self.controls_wrapper, 2) # Buttons take 20%
 
-        # Set the layout
+        # --- SET GENERAL LAYOUT ---
         self.layout.addLayout(self.left_col, 0, 0)
         self.layout.addLayout(self.right_col, 0, 1)
         self.layout.setColumnStretch(0, 4)
@@ -150,7 +151,7 @@ class SentryHUD(QMainWindow):
         self.history_list.append("<b style='color:cyan;'>[SYSTEM] REBOOT SUCCESSFUL: MEMORY PURGED</b>")
     
     def handle_lock_toggle(self):
-        """ Switch between Overwatch and Active Tracking"""
+        """ Switch between Overwatch and Active Tracking """
         is_locked = self.worker.toggle_lock() # Worker logic
         
         if is_locked:
@@ -161,7 +162,7 @@ class SentryHUD(QMainWindow):
             self.history_list.append("<i style='color:gray;'>TURRET: OVERWATCH MODE</i>")
 
     def handle_next_target(self):
-        """Switch the current 'Enemy' to the next person in view"""
+        """ Switch the current 'Enemy' to the next person in view """
         new_id = self.worker.switch_target(step=1) # Worker logic
 
         if new_id is not None:
@@ -170,7 +171,7 @@ class SentryHUD(QMainWindow):
             self.history_list.append("<i style='color:gray;'>[WARN] No targets available to cycle</i>")
 
     def handle_prev_target(self):
-        """Switch the current 'Enemy' to the previous person in view"""
+        """ Switch the current 'Enemy' to the previous person in view """
         new_id = self.worker.switch_target(step=-1) # Worker logic
 
         if new_id is not None:
@@ -179,7 +180,7 @@ class SentryHUD(QMainWindow):
             self.history_list.append("<i style='color:gray;'>[WARN] No targets available to cycle</i>")
 
     def handle_fire(self):
-        """Simulate engagement"""
+        """ Simulate engagement """
         is_fire = self.worker.trigger_fire() # Worker logic
 
         if is_fire:
@@ -192,6 +193,7 @@ class SentryHUD(QMainWindow):
     ###################################################################################
 
     def _create_preview_box(self, text):
+        """ Boxes on the top left, for detection comparison """
         lbl = QLabel(text)
         lbl.setFixedSize(112, 112)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -200,13 +202,19 @@ class SentryHUD(QMainWindow):
         return lbl
     
     def update_displays(self, main_frame, image_package, data_package):
+        """
+        The main function, changes the screen depending on the incoming data
+        main_frame : CameraStream frame with cv2 drawings
+        image_package : two np.arrays representing the crop and alignment
+        data_package: a dictionary and a float, representing events and fps
+        """ 
+
         # 0. Extract data
-        yolo_crop, retina_align = image_package[0], image_package[1]
+        detection_crop, retina_align = image_package[0], image_package[1]
         logs, fps_val = data_package[0], data_package[1]
 
         # 1. Update the Live Main Feed
-        cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
+        cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
         rgb_image = cv2.cvtColor(main_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
@@ -216,12 +224,12 @@ class SentryHUD(QMainWindow):
             self.video_label.width(), self.video_label.height(), 
             Qt.AspectRatioMode.KeepAspectRatio))
 
-        # 2. LOG PARSING
+        # 2. Event Parsing
         for event in logs:
             # 1. Print the header (e.g., [IDENTITY] ID 5: Kerem)
             self.history_list.append(event.get("html", ""))
             
-            # 2. If it's recognition, do our old-school sorting and printing
+            # 2. If recognition, sort and print the scores
             if event["type"] == "RECOGNITION":
                 dists = event["metadata"].get("distances", {})
                 
@@ -235,21 +243,22 @@ class SentryHUD(QMainWindow):
                             f"<font color='{color}' size='2'>&nbsp;&nbsp;&nbsp;&nbsp;{i+1}. {fname}: {d:.4f}</font>"
                         )
 
-        # 3. POSSIBILITY 3: Update Visual Crops
-        if yolo_crop.size > 0 and retina_align.size > 0:
-            # A. Update YOLO Box
-            y_rgb = cv2.cvtColor(yolo_crop, cv2.COLOR_BGR2RGB)
+        # 3. If new detection, update the top left images
+        if detection_crop.size > 0 and retina_align.size > 0:
+
+            # A. Update Detection Box
+            y_rgb = cv2.cvtColor(detection_crop, cv2.COLOR_BGR2RGB)
             y_resized = cv2.resize(y_rgb, (112, 112))
             y_qt = QImage(y_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
             self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
 
-            # B. Update ALIGN Box
+            # B. Update Alignment Box
             a_rgb = cv2.cvtColor(retina_align, cv2.COLOR_BGR2RGB)
             a_resized = cv2.resize(a_rgb, (112, 112))
             a_qt = QImage(a_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
             self.align_cap.setPixmap(QPixmap.fromImage(a_qt))
 
-            # C. Update COMPARE Box (Reference Photo)
+            # C. Update Comparison Box (the closes embedding model decided on)
             ref_path = None
             for event in reversed(logs):
                 if event["type"] == "RECOGNITION":

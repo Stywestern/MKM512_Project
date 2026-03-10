@@ -8,6 +8,7 @@ CAMERA_INDEX = 0           # USB Webcam index for pixels
 FRAME_WIDTH = 1280          # Logitech C270 specs
 FRAME_HEIGHT = 720
 FPS = 30                    # Target framerate
+FOCAL_LENGTH = 200 * 64 / 6.3 # Focal distance of the cam
 
 # --- DETECTOR SETTINGS ---
 RUN_ON_GPU = True           # Toggle GPU usage

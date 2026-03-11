@@ -1,12 +1,14 @@
 # modules/interface.py
 
 ##################################### Imports #####################################
-# Libraries
-from PyQt6.QtCore import QThread, pyqtSignal
+# Standart Libraries
 import cv2
-import numpy as np
 import time
 import os
+
+# Third Party Libraries
+from PyQt6.QtCore import QThread, pyqtSignal
+import numpy as np
 from collections import deque
 
 # Modules
@@ -21,7 +23,7 @@ from modules.controller import TurretController
 
 class VisionWorker(QThread):
     # Signals to communicate with the UI
-    # Sends: [Main Frame, Yolo Crop, Data Dict]
+    # Sends: [Main Frame, Detect Crop, Data Dict]
     update_signal = pyqtSignal(np.ndarray, list, list)
 
     def __init__(self, camera_instance):
@@ -45,6 +47,109 @@ class VisionWorker(QThread):
 
         log("VisionWorker initialized", "INFO")
 
+    ###################################################################################
+    #                                 HELPER METHODS
+    ###################################################################################
+
+    def _purge_stale_targets(self, current_ids):
+        """
+        Cleans up memory for targets no longer detected in the current frame.
+        Ensures Weapon Safety by revoking locks on lost targets.
+        """
+        # Create a list of IDs to remove to avoid 
+        targets_to_remove = [tid for tid in self.active_targets if tid not in current_ids]
+
+        for tid in targets_to_remove:
+            # 1. Clear Identity and Distance Memory
+            if tid in self.active_targets:
+                del self.active_targets[tid]
+            
+            # 2. Clear Smoothing/Jitter Buffers
+            if tid in self.box_history:
+                del self.box_history[tid]
+                
+            # 3. If locked, release the system
+            if tid == self.locked_target_id:
+                self.locked_target_id = None
+                self.is_firing = False
+                log(f"TARGET LOST: ID {tid} removed. System returning to Overwatch.", "INFO")
+            else:
+                log(f"Memory Cleared: ID {tid} (Stale)", "DEBUG")
+
+
+    def _apply_temporal_smoothing(self, target):
+        """
+        Filters high-frequency jitter using a Moving Average buffer.
+        Updates the target's bbox and center coordinates.
+        """
+
+        tid = target["id"]
+        raw_box = np.array(target["face_bbox"], dtype=float)
+
+        # Initialize buffer if new ID
+        if tid not in self.box_history:
+            self.box_history[tid] = deque(maxlen=self.box_window_size)
+        
+        self.box_history[tid].append(raw_box)
+        
+        # Calculate Mean
+        smoothed = np.mean(self.box_history[tid], axis=0).astype(int)
+        
+        # Update object
+        target["face_bbox"] = [smoothed[0], smoothed[1], smoothed[2], smoothed[3]]
+        target["center"] = ((smoothed[0] + smoothed[2]) // 2, 
+                            (smoothed[1] + smoothed[3]) // 2)
+        
+
+    def _sync_sensors_to_target(self, target, landmarks, raw_distances):
+        """
+        Finds the closest raw detection landmarks for a tracked ID. 
+        I did this because detector -> tracker pass sometimes messes with the ordering.
+        """
+        scx, scy = target["center"]
+        
+        # Spatial Matching: Find the raw landmark set closest to smoothed center
+        lm_idx = np.argmin([
+            np.linalg.norm(np.array([scx, scy]) - np.mean(lm, axis=0)) 
+            for lm in landmarks
+        ])
+        
+        # Update Distance Latch
+        current_dist = raw_distances[lm_idx] if lm_idx < len(raw_distances) else None
+        
+        if current_dist is not None:
+            self.active_targets[target["id"]]["distance"] = current_dist
+
+        return current_dist, landmarks[lm_idx]
+    
+
+    def _should_identify(self, track_id):
+        """
+        Determines if a specific target requires a fresh recognition attempt.
+        Currently triggers if the target is 'Unknown' and 5 seconds have passed.
+        """
+        current_time = time.time()
+        target_data = self.active_targets.get(track_id)
+
+        # 1. If we don't have this ID in memory at all, it's a 'New' target
+        if not target_data:
+            return True
+
+        # 2. Logic for 'Unknown' targets
+        if target_data.get("name") == "Unknown":
+            last_attempt = target_data.get("last_auth", 0)
+            
+            # 5-second cooldown to prevent spamming the Embedding model
+            if (current_time - last_attempt) > 5.0:
+                return True
+
+        # 3. Future Expansion: Add rules for 'Low Confidence' or 'Distance Changes'
+        return False
+
+    ###################################################################################
+    #                                 MAIN LOOP
+    ###################################################################################
+
     def run(self):
         prev_time = time.time()
         log("Running Sentry Logic Subsystem", "INFO")
@@ -57,74 +162,38 @@ class VisionWorker(QThread):
             image_package = [empty_img, empty_img] # [YOLO_CROP, ALIGN_CROP]
             frame_events = [] # logging purposes
             
-            # 1. Capture
+            # 1. Capture the frame
             frame = self.cam.read()
             clean_frame = frame.copy() # same frame without drawings for UI, I will pass this to AI
-            if frame is None or frame.size == 0:
-                self.msleep(10); continue
+            if frame is None or frame.size == 0: self.msleep(10); continue
         
-            # 2. Scan
+            # 2. Scan for detection
             if not self.is_frozen:
+
                 # Step A: Get raw [x1, y1, x2, y2, conf], and facial landmarks from detector
                 raw_boxes, landmarks, raw_distances = self.detector.detect(clean_frame)
                 
                 # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
                 detections = self.tracker.update(raw_boxes, clean_frame)
                 
-                # Delete IDs from memory that Detector no longer sees in this frame
+                # Step B.1: Purge ids that are absent from the frame
                 current_ids = [d["id"] for d in detections]
-                for track_id in list(self.active_targets.keys()):
-                    if track_id not in current_ids:
-                        del self.active_targets[track_id]
-                        del self.box_history[track_id]
+                self._purge_stale_targets(current_ids)
 
-                        # If our 'Enemy' is no longer in the active targets, release the lock
-                        if track_id == self.locked_target_id:
-                            self.locked_target_id = None
-                            self.is_firing = False
-                            log(f"TARGET LOST: ID {track_id} removed from active memory.", "INFO")
-
+# --------------------------------- Step C: Start loop for one target ----------------------------------------
                 for target in detections:
+                    # ------------------- PREPROCESSING ---------------
+                    self._apply_temporal_smoothing(target) # smoothens the box
+                    current_dist, face_landmarks = self._sync_sensors_to_target(target, landmarks, raw_distances) # returns correct landmarks
+
                     track_id = target["id"]
-                    new_box = np.array(target["face_bbox"], dtype=float)
+                    sx1, sx2, sy1, sy2 = target["face_bbox"]
 
-                    if track_id not in self.box_history:
-                        self.box_history[track_id] = deque(maxlen=self.box_window_size)
-                    
-                    # Add the current detection to the sliding window
-                    self.box_history[track_id].append(new_box)
-
-                    # Moving Avarage calc
-                    smoothed_box = np.mean(self.box_history[track_id], axis=0).astype(int)
-                    sx1, sy1, sx2, sy2 = smoothed_box
-
-                    target["face_bbox"] = [sx1, sy1, sx2, sy2]
-                    target["center"] = ((sx1 + sx2) // 2, (sy1 + sy2) // 2)
-                    stx, sty = target["center"][0], target["center"][1]
-
-                    lm_idx = np.argmin([np.linalg.norm(np.array([stx, sty]) - np.mean(lm, axis=0)) for lm in landmarks]) # tracker messes the order so I recheck the get the correct one
-                    face_landmarks = landmarks[lm_idx]
-
-                    current_dist = None
-                    if lm_idx is not None:
-                        current_dist = raw_distances[lm_idx]
-
-                    # --- RECOGNITION LOGIC ---
-                    # Case A: Brand New Target
-                    is_new = track_id not in self.active_targets
-                    
-                    # Case B: Already Known, but 'Unknown' and 5 seconds have passed
-                    current_time = time.time()
-                    should_retry = False
-                    if not is_new:
-                        target_data = self.active_targets[track_id]
-                        if target_data["name"] == "Unknown":
-                            last_attempt = target_data.get("last_auth", 0)
-                            if (current_time - last_attempt) > 5.0:
-                                should_retry = True
+                    # -------------- RECOGNITION LOGIC -----------------------
 
                     # --- POSSIBILITY 2: Brand New Target (Send frame, [crop, aligned]) ---
-                    if is_new or should_retry:
+                    current_time = time.time()
+                    if self._should_identify(track_id):
                         h, w = frame.shape[:2]
                         x1c, y1c, x2c, y2c = max(0, sx1), max(0, sy1), min(w, sx2), min(h, sy2) # border protection
                         detector_crop = clean_frame[y1c:y2c, x1c:x2c].copy()
@@ -197,10 +266,6 @@ class VisionWorker(QThread):
             processing_time = time.time() - loop_start
             sleep_duration = max(1, int((0.0333 - processing_time) * 1000))
             self.msleep(sleep_duration)
-
-    ###################################################################################
-    #                                 HELPER METHODS
-    ###################################################################################
         
     ###################################################################################
     #                                 BUTTON LOGIC

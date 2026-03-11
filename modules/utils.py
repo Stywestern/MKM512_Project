@@ -57,12 +57,10 @@ def create_event(event_type: str, **kwargs):
 
     return event
 
-HERE AFHW^YE HEHRE HJEHEHRE HEHREHE HEHRHEH
 # Cleanup for interface.py 
 def opencv_to_qpixmap(frame, width, height):
     """
-    Decoupled utility to convert CV2 BGR images to QPixmap.
-    Does not require 'self' as it is a pure functional transform.
+    Utility to convert CV2 BGR images to QPixmap.
     """
     if frame is None or frame.size == 0:
         return QPixmap() # Return empty pixmap if frame is invalid

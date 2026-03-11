@@ -13,6 +13,7 @@ import cv2
 
 # Modules
 import config
+from utils import opencv_to_qpixmap
 from modules.utils import log
 
 ###################################################################################
@@ -216,13 +217,7 @@ class SentryHUD(QMainWindow):
         # 1. Update the Live Main Feed
         cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
-        rgb_image = cv2.cvtColor(main_frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_image.shape
-        qt_img = QImage(rgb_image.data, w, h, ch * w, QImage.Format.Format_RGB888)
-        
-        self.video_label.setPixmap(QPixmap.fromImage(qt_img).scaled(
-            self.video_label.width(), self.video_label.height(), 
-            Qt.AspectRatioMode.KeepAspectRatio))
+        self.video_label.setPixmap(opencv_to_qpixmap(main_frame, self.video_label.width(), self.video_label.height())) 
 
         # 2. Event Parsing
         for event in logs:
@@ -247,16 +242,10 @@ class SentryHUD(QMainWindow):
         if detection_crop.size > 0 and retina_align.size > 0:
 
             # A. Update Detection Box
-            y_rgb = cv2.cvtColor(detection_crop, cv2.COLOR_BGR2RGB)
-            y_resized = cv2.resize(y_rgb, (112, 112))
-            y_qt = QImage(y_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
-            self.yolo_cap.setPixmap(QPixmap.fromImage(y_qt))
+            self.detect_cap.setPixmap(opencv_to_qpixmap(detection_crop, 112, 112))
 
             # B. Update Alignment Box
-            a_rgb = cv2.cvtColor(retina_align, cv2.COLOR_BGR2RGB)
-            a_resized = cv2.resize(a_rgb, (112, 112))
-            a_qt = QImage(a_resized.data, 112, 112, 112 * 3, QImage.Format.Format_RGB888)
-            self.align_cap.setPixmap(QPixmap.fromImage(a_qt))
+            self.align_cap.setPixmap(opencv_to_qpixmap(retina_align, 112, 112))
 
             # C. Update Comparison Box (the closes embedding model decided on)
             ref_path = None
@@ -267,9 +256,4 @@ class SentryHUD(QMainWindow):
             
             ref_cv = cv2.imread(ref_path)
             if ref_cv is not None:
-                ref_rgb = cv2.cvtColor(ref_cv, cv2.COLOR_BGR2RGB)
-                ref_resized = cv2.resize(ref_rgb, (112, 112))
-                r_h, r_w, r_ch = ref_resized.shape
-                
-                ref_qt = QImage(ref_resized.data, r_w, r_h, r_ch * r_w, QImage.Format.Format_RGB888)
-                self.compare_cap.setPixmap(QPixmap.fromImage(ref_qt))
+                self.compare_cap.setPixmap(opencv_to_qpixmap(ref_cv, 112, 112))

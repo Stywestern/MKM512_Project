@@ -156,12 +156,13 @@ class SCRFDDetector(BaseDetector):
         Returns: 
         1. boxes: Nx6 numpy array
         2. landmarks: Nx5x2 numpy array
+        3. distances
         """
         # SCRFD returns: bboxes [x1, y1, x2, y2, score], kpss [5 landmarks]
         bboxes, kpss = self.model.detect(frame)
         
         if bboxes is None or len(bboxes) == 0:
-            return np.empty((0, 6)), np.empty((0, 5, 2))
+            return np.empty((0, 6)), np.empty((0, 5, 2)), []
         
         # Format for Tracker (BoxMOT needs Nx6)
         detections = np.zeros((bboxes.shape[0], 6))

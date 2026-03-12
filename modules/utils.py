@@ -63,18 +63,15 @@ def opencv_to_qpixmap(frame, width, height):
     Utility to convert CV2 BGR images to QPixmap.
     """
     if frame is None or frame.size == 0:
-        return QPixmap() # Return empty pixmap if frame is invalid
+        return QPixmap()
 
-    # 1. Convert BGR (OpenCV default) to RGB (Qt default)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     h, w, ch = rgb.shape
     
-    # 2. Create QImage (ch * w is the 'bytesPerLine' parameter)
-    qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+    qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
     
-    # 3. Convert to Pixmap and Scale for the HUD label
     return QPixmap.fromImage(qt_img).scaled(
         width, height, 
         Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation # Added for better UI quality
+        Qt.TransformationMode.SmoothTransformation
     )

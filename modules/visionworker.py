@@ -116,9 +116,12 @@ class VisionWorker(QThread):
         
         # Update Distance Latch
         current_dist = raw_distances[lm_idx] if lm_idx < len(raw_distances) else None
-        
+
         if current_dist is not None:
-            self.active_targets[target["id"]]["distance"] = current_dist
+            try:
+                self.active_targets[target["id"]]["distance"] = current_dist
+            except:
+                pass
 
         return current_dist, landmarks[lm_idx]
     
@@ -145,6 +148,32 @@ class VisionWorker(QThread):
 
         # 3. Future Expansion: Add rules for 'Low Confidence' or 'Distance Changes'
         return False
+    
+    def _arbitrate_target_lock(self, potential_enemies):
+        """
+        Decides which target to lock onto if no lock currently exists.
+        Can be expanded to include distance or priority-based sorting.
+        """
+
+        # 1. Early exit: If we aren't in locking mode or already have a lock
+        if not self.is_locking or self.locked_target_id is not None:
+            return None
+
+        # 2. Early exit: No enemies present
+        if not potential_enemies:
+            return None
+
+        # 3. SORTING LOGIC (The 'Doctrine')
+        potential_enemies.sort(key=lambda x: self.active_targets.get(x["id"], {}).get("distance", 200.0))
+
+        # 4. SELECT AND LOCK
+        best_target = potential_enemies[0]
+        self.locked_target_id = best_target["id"]
+        
+        log(f"TACTICAL ARBITRATOR: Locked onto ID {self.locked_target_id} (Closest Enemy)", "WARNING")
+        
+        # Return an event to be added to the UI logs
+        return create_event("LOCK", track_id=self.locked_target_id, status="LOCKED")
 
     ###################################################################################
     #                                 MAIN LOOP
@@ -176,33 +205,38 @@ class VisionWorker(QThread):
                 # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
                 detections = self.tracker.update(raw_boxes, clean_frame)
                 
-                # Step B.1: Purge ids that are absent from the frame
+                # Step B.1.: Purge ids that are absent from the frame
                 current_ids = [d["id"] for d in detections]
                 self._purge_stale_targets(current_ids)
 
-# --------------------------------- Step C: Start loop for one target ----------------------------------------
+# --------------------------------- Step C (Starts): Start loop for one target ----------------------------------------
+                potential_enemies = []
+
                 for target in detections:
                     # ------------------- PREPROCESSING ---------------
+
                     self._apply_temporal_smoothing(target) # smoothens the box
                     current_dist, face_landmarks = self._sync_sensors_to_target(target, landmarks, raw_distances) # returns correct landmarks
 
                     track_id = target["id"]
-                    sx1, sx2, sy1, sy2 = target["face_bbox"]
+                    sx1, sy1, sx2, sy2 = target["face_bbox"]
 
                     # -------------- RECOGNITION LOGIC -----------------------
 
                     # --- POSSIBILITY 2: Brand New Target (Send frame, [crop, aligned]) ---
                     current_time = time.time()
                     if self._should_identify(track_id):
+
+                        # C.1. Crop the correct frame
                         h, w = frame.shape[:2]
-                        x1c, y1c, x2c, y2c = max(0, sx1), max(0, sy1), min(w, sx2), min(h, sy2) # border protection
+                        x1c, y1c, x2c, y2c = max(0, sx1), max(0, sy1), min(w, sx2), min(h, sy2)
                         detector_crop = clean_frame[y1c:y2c, x1c:x2c].copy()
                         
-                        # Recognition
+                        # C.2. Run recognition, returns a name, scores dict, aligned_face image for debug
                         name, distances, aligned_face = self.recognizer.identify(clean_frame, face_landmarks)
                         if aligned_face is None or aligned_face.size == 0: continue
 
-                        # Sending format
+                        # C.3. Update emittion data
                         image_package = [detector_crop, aligned_face]
                         
                         self.active_targets[track_id] = {"name": name, "last_auth": current_time, "distance": current_dist or 200.0}
@@ -214,20 +248,18 @@ class VisionWorker(QThread):
 
                     # --- POSSIBILITY 3: Already Tracking (Send frame, [crop, empty]) ---
                     else:
-                        # We still need to draw the box, but we don't update the snaps, image_package remains [empty_img, empty_img]
+                        # We still need to draw the box, but we don't update the snaps, image_package remains [empty_img, empty_img], we pass the stuff as it is
                         if current_dist is not None:
                             self.active_targets[track_id]["distance"] = current_dist
-                    
-                    name = self.active_targets[track_id]["name"]
-                    if name != "Unknown" and self.locked_target_id is None and self.is_locking and affiliation == "ENEMY":
-                        self.locked_target_id = track_id
-                        frame_events.append(create_event("LOCK", track_id=track_id, status="LOCKED"))
 
-                    # STATUS DETERMINATION (Must happen for everyone)
-                    # 1. Determine Affiliation
+                        name = self.active_targets[track_id]["name"]
+
+                    # C.4. Determine Affiliation
                     if name in config.ENEMIES:
                         affiliation = "ENEMY"
                         color = config.COLOR_ENEMY
+                        potential_enemies.append(target)
+
                     elif name in config.FRIENDS:
                         affiliation = "FRIEND"
                         color = config.COLOR_FRIEND
@@ -235,10 +267,10 @@ class VisionWorker(QThread):
                         affiliation = "STRANGER"
                         color = config.COLOR_STRANGER
 
+                    # C.5. Draw HUD on the main frame (HERE HEREH REHRE HEREH ERHE HERE)
                     is_enemy = (track_id == self.locked_target_id)
                     thickness = 4 if (is_enemy and self.is_firing) else 2
 
-                    # Draw HUD on the main frame
                     cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
                     cv2.rectangle(frame, (sx1, sy1 - 20), (sx2, sy1), color, -1)
 
@@ -251,18 +283,26 @@ class VisionWorker(QThread):
                         cv2.line(frame, (cx-20, cy), (cx+20, cy), (0, 0, 255), thickness)
                         cv2.line(frame, (cx, cy-20), (cx, cy+20), (0, 0, 255), thickness)
 
+# --------------------------------- Step C (Ends): End loop for one target ----------------------------------------
+
             # 3. TELEMETRY & EMIT
+
+            # A. Check if locking is going on
+            lock_event = self._arbitrate_target_lock(potential_enemies)
+            if lock_event:
+                frame_events.append(lock_event)
+
+            # B. Calculate FPS
             delta_time = loop_start - prev_time
             fps = 1.0 / delta_time if delta_time > 0 else 30.0
             prev_time = loop_start
 
-            # Pack the dictionaries
+            # C. Send the data
             data_package = [frame_events, round(fps, 1)]
-
-            # Send the data
             self.update_signal.emit(frame, image_package, data_package)
 
             # 4. SLEEP (FPS Ceiling)
+
             processing_time = time.time() - loop_start
             sleep_duration = max(1, int((0.0333 - processing_time) * 1000))
             self.msleep(sleep_duration)

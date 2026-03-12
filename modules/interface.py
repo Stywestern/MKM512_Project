@@ -13,8 +13,7 @@ import cv2
 
 # Modules
 import config
-from utils import opencv_to_qpixmap
-from modules.utils import log
+from modules.utils import log, opencv_to_qpixmap
 
 ###################################################################################
 
@@ -216,7 +215,6 @@ class SentryHUD(QMainWindow):
 
         # 1. Update the Live Main Feed
         cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
-
         self.video_label.setPixmap(opencv_to_qpixmap(main_frame, self.video_label.width(), self.video_label.height())) 
 
         # 2. Event Parsing

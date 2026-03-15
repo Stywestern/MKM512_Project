@@ -252,6 +252,11 @@ class SentryHUD(QMainWindow):
                     ref_path = event["metadata"].get("ref_path")
                     break
             
-            ref_cv = cv2.imread(ref_path)
-            if ref_cv is not None:
-                self.compare_cap.setPixmap(opencv_to_qpixmap(ref_cv, 112, 112))
+            if ref_path and isinstance(ref_path, str):
+                ref_cv = cv2.imread(ref_path)
+                if ref_cv is not None:
+                    self.compare_cap.setPixmap(opencv_to_qpixmap(ref_cv, 112, 112))
+            else:
+                # Optional: Clear the box or set a placeholder if no recognition this frame
+                # self.compare_cap.setText("WAITING...") 
+                pass

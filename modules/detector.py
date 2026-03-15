@@ -118,15 +118,15 @@ class RetinaDetector(BaseDetector):
 class SCRFDDetector(BaseDetector):
     def __init__(self, threshold=config.DET_CONF_THRESHOLD):
         # SCRFD is usually distributed as an ONNX model
-        model_path = os.path.join("assets", "models", "scrfd_10g_bnkps.onnx")
+        self.model_path_ = os.path.join("assets", "models", "scrfd_10g_bnkps.onnx")
         self.threshold_ = threshold
 
-        self.focal_length = config.FOCAL_LENGTH # Get from your 200cm calibration
+        self.focal_length = config.FOCAL_LENGTH # calibration
         self.real_ipd = 6.3 # Average human eye distance in cm
         
-        # Using InsightFace's model zoo for SCRFD as well
+        # Using InsightFace's model zoo for SCRFD
         ctx_id = 0 if config.RUN_ON_GPU else -1
-        self.model = get_model(model_path, providers=['CUDAExecutionProvider' if config.RUN_ON_GPU else 'CPUExecutionProvider'])
+        self.model = get_model(self.model_path_, providers=['CUDAExecutionProvider' if config.RUN_ON_GPU else 'CPUExecutionProvider'])
         self.model.prepare(
                 ctx_id=ctx_id,
                 input_size=(640, 640),
@@ -135,9 +135,11 @@ class SCRFDDetector(BaseDetector):
 
         log("SCRFD Detector initialized.", "INFO")
 
+    def __str__(self):
+        return f"SCRFD Detector (Model: {self.model_path}), Conf_Threshold: %{self.threshold_ * 100}"
 
     def calculate_distance(self, landmarks):
-        """Internal helper for IPD math"""
+        """ Internal helper for IPD math, returns the calculated distance """
         if landmarks is None or len(landmarks) < 2:
             return None
         

@@ -34,8 +34,8 @@ class VisionWorker(QThread):
         self.recognizer = TurretRecognizer()
         self.controller = TurretController(simulation=True)
 
+        self.prev_time = 0
         self.active_targets = {}
-
         self.box_window_size = 6 # Tuning: Higher = Smoother, but more lag
         self.box_history = {}    # {track_id: deque(maxlen=6)}
 
@@ -174,19 +174,82 @@ class VisionWorker(QThread):
         
         # Return an event to be added to the UI logs
         return create_event("LOCK", track_id=self.locked_target_id, status="LOCKED")
+    
+    def _draw_target_hud(self, frame, target, name, affiliation, color, distance):
+        """
+        Handles all visual overlays for a single target.
+        Logic:
+        1. Draw the bounding box and header bar.
+        2. Overlay telemetry (Name, ID, Distance).
+        3. If currently firing at THIS target, draw the red engagement crosshair.
+        """
+        sx1, sy1, sx2, sy2 = target["face_bbox"]
+        track_id = target["id"]
+        
+        # 1. Determine if this is the ACTIVE engagement target
+        is_locked_target = (track_id == self.locked_target_id)
+        is_actively_firing = (is_locked_target and self.is_firing)
+        
+        # Visual thickness increases when firing for 'recoil' effect
+        thickness = 4 if is_actively_firing else 2
+
+        # 2. Draw Bounding Box & Identity Header
+        cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
+        cv2.rectangle(frame, (sx1, sy1 - 22), (sx2, sy1), color, -1)
+
+        # 3. Telemetry String
+        # Format: ENEMY: Kerem (ID:5)(DIST: 150.2cm)
+        display_text = f"{affiliation}: {name} (ID:{track_id})(DIST: {distance:.1f}cm)"
+        
+        cv2.putText(frame, display_text, (sx1 + 5, sy1 - 7), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # 4. Engagement Crosshair (Only if firing)
+        if is_actively_firing:
+            cx, cy = target["center"]
+            # Red crosshair centered on the smoothed face center
+            cv2.line(frame, (cx - 25, cy), (cx + 25, cy), (0, 0, 255), thickness)
+            cv2.line(frame, (cx, cy - 25), (cx, cy + 25), (0, 0, 255), thickness)
+            # Optional: Add a 'FIRE' alert next to the box
+            cv2.putText(frame, "ENGAGING", (sx1, sy2 + 20), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            
+    def _finalize_cycle(self, frame, image_package, frame_events, loop_start):
+        """
+        Handles telemetry calculation, UI communication, and thread timing.
+        Ensures the loop maintains a stable framerate.
+        """
+        # 1. Calculate FPS
+        # We use self.prev_time (stored in the class) to calculate the delta
+        current_time = time.time()
+        delta_time = current_time - self.prev_time
+        fps = 1.0 / delta_time if delta_time > 0 else 30.0
+        self.prev_time = current_time
+
+        # 2. Package and Emit to UI
+        data_package = [frame_events, round(fps, 1)]
+        self.update_signal.emit(frame, image_package, data_package)
+
+        # 3. Dynamic Sleep (FPS Governor)
+        # Target: 33.3ms per frame (approx 30 FPS)
+        processing_time = time.time() - loop_start
+        target_period = 0.0333 
+        
+        sleep_duration = max(1, int((target_period - processing_time) * 1000))
+        self.msleep(sleep_duration)
 
     ###################################################################################
     #                                 MAIN LOOP
     ###################################################################################
 
     def run(self):
-        prev_time = time.time()
+        self.prev_time = time.time()
         log("Running Sentry Logic Subsystem", "INFO")
         
         while self.running:
             loop_start = time.time()
             
-            # --- POSSIBILITY 1: No Face Detected (Just send the frame) ---
+            # POSSIBILITY 1: No Face Detected (Just send the frame) 
             empty_img = np.array([], dtype=np.uint8)
             image_package = [empty_img, empty_img] # [YOLO_CROP, ALIGN_CROP]
             frame_events = [] # logging purposes
@@ -213,7 +276,7 @@ class VisionWorker(QThread):
                 potential_enemies = []
 
                 for target in detections:
-                    # ------------------- PREPROCESSING ---------------
+                    # ------------------- PREPROCESSING (START) ---------------
 
                     self._apply_temporal_smoothing(target) # smoothens the box
                     current_dist, face_landmarks = self._sync_sensors_to_target(target, landmarks, raw_distances) # returns correct landmarks
@@ -221,9 +284,11 @@ class VisionWorker(QThread):
                     track_id = target["id"]
                     sx1, sy1, sx2, sy2 = target["face_bbox"]
 
-                    # -------------- RECOGNITION LOGIC -----------------------
+                    # ------------------- PREPROCESSING (END) ---------------
 
-                    # --- POSSIBILITY 2: Brand New Target (Send frame, [crop, aligned]) ---
+                    # -------------- RECOGNITION (START) -----------------------
+
+                    # POSSIBILITY 2: Brand New Target (Send frame, [crop, aligned])
                     current_time = time.time()
                     if self._should_identify(track_id):
 
@@ -246,7 +311,7 @@ class VisionWorker(QThread):
                         ref_path = os.path.join("assets", "faces", "debug_aligned", person_dir, f"aligned_{best_filename}")
                         frame_events.append(create_event("RECOGNITION", track_id=track_id, name=name, distances=distances, ref_path=ref_path))
 
-                    # --- POSSIBILITY 3: Already Tracking (Send frame, [crop, empty]) ---
+                    # POSSIBILITY 3: Already Tracking (Send frame, [crop, empty])
                     else:
                         # We still need to draw the box, but we don't update the snaps, image_package remains [empty_img, empty_img], we pass the stuff as it is
                         if current_dist is not None:
@@ -267,21 +332,12 @@ class VisionWorker(QThread):
                         affiliation = "STRANGER"
                         color = config.COLOR_STRANGER
 
-                    # C.5. Draw HUD on the main frame (HERE HEREH REHRE HEREH ERHE HERE)
-                    is_enemy = (track_id == self.locked_target_id)
-                    thickness = 4 if (is_enemy and self.is_firing) else 2
+                    # -------------- RECOGNITION (END) -----------------------
 
-                    cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
-                    cv2.rectangle(frame, (sx1, sy1 - 20), (sx2, sy1), color, -1)
+                    # -------------- VISUALIZATION (START) ----------------------- 
+                    self._draw_target_hud(frame, target, name, affiliation, color, current_dist or 200.0)
 
-                    display_text = f"{affiliation}: {name} (ID:{track_id})(DIST: {current_dist:.1f}cm)"
-                    cv2.putText(frame, display_text, (sx1 + 5, sy1 - 7), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                    
-                    if is_enemy and self.is_firing:
-                        cx, cy = (sx1 + sx2) // 2, (sy1 + sy2) // 2
-                        cv2.line(frame, (cx-20, cy), (cx+20, cy), (0, 0, 255), thickness)
-                        cv2.line(frame, (cx, cy-20), (cx, cy+20), (0, 0, 255), thickness)
+                    # -------------- VISUALIZATION (END) ----------------------- 
 
 # --------------------------------- Step C (Ends): End loop for one target ----------------------------------------
 
@@ -292,20 +348,29 @@ class VisionWorker(QThread):
             if lock_event:
                 frame_events.append(lock_event)
 
-            # B. Calculate FPS
-            delta_time = loop_start - prev_time
-            fps = 1.0 / delta_time if delta_time > 0 else 30.0
-            prev_time = loop_start
+            # B. Send data to the PLC
+            if self.locked_target_id is not None:
+                # 1. Find the target dictionary in the CURRENT detections list
+                # We need the current frame's center (scx, scy)
+                locked_target_obj = next((d for d in detections if d["id"] == self.locked_target_id), None)
+                
+                if locked_target_obj:
+                    # 2. Calculate vector (Using our Parallax math)
+                    pan_err, tilt_err = self._calculate_targeting_vector(locked_target_obj)
+                    print(pan_err, tilt_err)
+                    
+                    # 3. Fire Command (Only fire if they are an ENEMY and we are in firing mode)
+                    # Note: We already checked they were an enemy to lock them
+                    self.controller.update_turret(pan_err, tilt_err, self.is_firing)
+                else:
+                    # Target is gone! Purge will handle memory, but we must stop motors now.
+                    self.controller.update_turret(0, 0, False)
+            else:
+                # No lock? Standby.
+                self.controller.update_turret(0, 0, False)
 
-            # C. Send the data
-            data_package = [frame_events, round(fps, 1)]
-            self.update_signal.emit(frame, image_package, data_package)
-
-            # 4. SLEEP (FPS Ceiling)
-
-            processing_time = time.time() - loop_start
-            sleep_duration = max(1, int((0.0333 - processing_time) * 1000))
-            self.msleep(sleep_duration)
+            # C. Send the loop info
+            self._finalize_cycle(frame, image_package, frame_events, loop_start)
         
     ###################################################################################
     #                                 BUTTON LOGIC
@@ -403,6 +468,41 @@ class VisionWorker(QThread):
     #                              CONTROLLER EMIT
     ###################################################################################
 
+    def _calculate_targeting_vector(self, target):
+        """
+        Translates pixel coordinates and distance into physical angles.
+        Includes Parallax Correction for the camera-to-barrel offset.
+        """
+        cx, cy = target["center"]
+        dist_cm = self.active_targets[target["id"]].get("distance", 200.0)
+
+        # 1. Get Pixel Error from Screen Center (640, 360)
+        dx = cx - 640
+        dy = cy - 360 # Note: In pixels, Y increases downwards
+
+        # 2. Convert Pixels to Radians (using our Focal Length)
+        # Formula: theta = arctan(pixels / focal_length)
+        yaw_rad = np.arctan2(dx, config.FOCAL_LENGTH)
+        pitch_rad = np.arctan2(dy, config.FOCAL_LENGTH)
+
+        # 3. PARALLAX CORRECTION (Vertical Offset)
+        # Assume camera is 10cm ABOVE the barrel
+        camera_offset_y = 10.0 
+        # At 'dist_cm', the barrel needs to tilt UP slightly more than the camera sees
+        # correction_angle = arctan(offset / distance)
+        parallax_correction = np.arctan2(camera_offset_y, dist_cm)
+        
+        # Final Pitch = Visual Pitch + Parallax Correction
+        corrected_pitch_rad = pitch_rad + parallax_correction
+
+        # 4. Convert to normalized units (-1.0 to 1.0) for the Comms module
+        # We assume our "Field of View" is the limit
+        pan_error = np.degrees(yaw_rad) / 30.0   # Normalized to a 60deg total span
+        tilt_error = np.degrees(corrected_pitch_rad) / 20.0 
+
+        return np.clip(pan_error, -1.0, 1.0), np.clip(tilt_error, -1.0, 1.0)
+
+
     def transmit_to_controller(self, pan_error, tilt_error, fire_command):
         """
         Placeholder for PLC/Microcontroller communication.
@@ -412,5 +512,7 @@ class VisionWorker(QThread):
         """
 
         pass
+
+
 
     

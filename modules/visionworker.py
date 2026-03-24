@@ -357,17 +357,17 @@ class VisionWorker(QThread):
                 if locked_target_obj:
                     # 2. Calculate vector (Using our Parallax math)
                     pan_err, tilt_err = self._calculate_targeting_vector(locked_target_obj)
-                    print(pan_err, tilt_err)
+                    #print(pan_err, tilt_err)
                     
                     # 3. Fire Command (Only fire if they are an ENEMY and we are in firing mode)
                     # Note: We already checked they were an enemy to lock them
-                    self.controller.update_turret(pan_err, tilt_err, self.is_firing)
+                    self.transmit_to_controller(pan_err, tilt_err, self.is_firing)
                 else:
                     # Target is gone! Purge will handle memory, but we must stop motors now.
-                    self.controller.update_turret(0, 0, False)
+                    self.transmit_to_controller(0, 0, False)
             else:
                 # No lock? Standby.
-                self.controller.update_turret(0, 0, False)
+                self.transmit_to_controller(0, 0, False)
 
             # C. Send the loop info
             self._finalize_cycle(frame, image_package, frame_events, loop_start)
@@ -510,6 +510,10 @@ class VisionWorker(QThread):
         tilt_error: float (-1.0 to 1.0)
         fire_command: bool
         """
+
+        # We pass the normalized floats (-1.0 to 1.0) to the controller.
+        # The controller will handle the integer conversion for the Omron registers.
+        self.controller.update_turret(pan_error, tilt_error, fire_command)
 
         pass
 

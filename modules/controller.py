@@ -3,6 +3,8 @@
 ##################################### Imports #####################################
 # Libraries
 from pycomm3 import LogixDriver
+import numpy as np
+import time
 
 # Modules
 from modules.utils import log
@@ -15,12 +17,20 @@ class TurretController:
         self.connected = False
         self.deadzone = 0.05
         
-        # 1. Use the IP and Tag names your colleagues define in Sysmac Studio
+        # PD Parameters (Simulation & Real-time Damping)
+        self.kp = 0.8
+        self.kd = 0.2
+        self.last_error_x = 0
+        self.last_error_y = 0
+        self.last_time = time.time()
+        self.last_print_time = 0
+
+        # Omron PLC parameters
         self.PLC_IP = "192.168.0.10" 
         self.tags = {
-            "pan": "PC_to_PLC_PanError",   # Must match PLC Global Variable Name
+            "pan": "PC_to_PLC_PanError",   # Aiming Velocity/Position
             "tilt": "PC_to_PLC_TiltError",
-            "fire": "PC_to_PLC_FireCmd"
+            "fire": "PC_to_PLC_FireCmd"    # Laser Trigger
         }
 
         if self.is_sim:
@@ -30,47 +40,71 @@ class TurretController:
             self.connect_to_plc()
 
     def connect_to_plc(self):
-        """Initializes the EtherNet/IP Driver"""
+        """Initializes the EtherNet/IP Driver for Omron NX1P2"""
         log(f"Initializing CIP Driver for Omron at {self.PLC_IP}...", "INFO")
         try:
-            # The LogixDriver works for Omron NX/NJ over EtherNet/IP
             self.client = LogixDriver(self.PLC_IP)
-            # We don't 'open' yet; pycomm3 handles connection per-write or via 'with'
             self.connected = True
-            log("PLC Driver Ready (Physical connection pending first write)", "INFO")
+            log("PLC Driver Ready", "INFO")
         except Exception as e:
             log(f"Connection Failed: {e}", "ERROR")
             self.connected = False
 
-    def update_turret(self, pan_error, tilt_error, fire_cmd):
-        # 1. Apply Deadzone
-        if abs(pan_error) < self.deadzone: pan_error = 0
-        if abs(tilt_error) < self.deadzone: tilt_error = 0
+    def update_turret(self, target_x, target_y, dist_cm, fire_cmd):
+        """
+        Calculates PD response and logs real-time targeting effort.
+        target_x/y: normalized error (-1.0 to 1.0)
+        """
+        current_time = time.time()
+        dt = current_time - self.last_time
+        if dt <= 0: dt = 0.033
 
-       # Omron NX1P2 handles 'REAL' (float) types natively. 
-        # We don't even need to convert to INT unless your friends prefer it!
-        if self.is_sim:
-            pass
-        elif self.connected:
-            self._send_payload(pan_error, tilt_error, fire_cmd)
+        # 1. PD Calculation (The 'Effort')
+        p_x = self.kp * target_x
+        p_y = self.kp * target_y 
+        d_x = self.kd * (target_x - self.last_error_x) / dt
+        d_y = self.kd * (target_y - self.last_error_y) / dt
+
+        effort_x = np.clip(p_x + d_x, -1.0, 1.0)
+        effort_y = np.clip(p_y + d_y, -1.0, 1.0)
+
+        # 3. CONSOLE TELEMETRY
+        if current_time - self.last_print_time >= 1.0:
+            abs_err_x = int(target_x * 640)
+            abs_err_y = int(target_y * 360)
+            
+            print(f"\n[SYSTEM STATUS - {time.strftime('%H:%M:%S')}]")
+            print(f"| ERROR:  X: {abs_err_x:4d}px | Y: {abs_err_y:4d}px")
+            print(f"| EFFORT: Pan: {effort_x:+.3f} | Tilt: {effort_y:+.3f}")
+            print(f"| TARGET: Dist: {dist_cm:5.1f}cm | Laser: {'ACTIVE' if fire_cmd else 'OFF'}")
+            print("-" * 50)
+            
+            self.last_print_time = current_time
+
+        # 4. Deadzone & Transmission
+        out_x = 0 if abs(effort_x) < self.deadzone else effort_x
+        out_y = 0 if abs(effort_y) < self.deadzone else effort_y
+
+        if not self.is_sim and self.connected:
+            self._send_payload(out_x, out_y, fire_cmd)
+
+        # Memory Update
+        self.last_error_x = target_x
+        self.last_error_y = target_y
+        self.last_time = current_time
 
     def _send_payload(self, p, t, f):
-        """ The actual CIP Write operation"""
         try:
-            # Efficiently write multiple tags in one 'packet'
             self.client.write(
-                (self.tags["pan"], p),
-                (self.tags["tilt"], t),
-                (self.tags["fire"], f)
+                (self.tags["pan"], float(p)),
+                (self.tags["tilt"], float(t)),
+                (self.tags["fire"], bool(f))
             )
-
         except Exception as e:
             log(f"Data Transmission Error: {e}", "ERROR")
-            self.connected = False # Force reconnection attempt next cycle
+            self.connected = False
 
     def emergency_stop(self):
-        log("!!! EMERGENCY STOP: SHUTTING DOWN SERVO DRIVES !!!", "ERROR")
         if self.connected and not self.is_sim:
-            # If they have an 'Enable' tag, we set it to False
             self.client.write("Servo_Enable_Bit", False)
-        self.update_turret(0, 0, False)
+        self.update_turret(0, 0, 100, False)

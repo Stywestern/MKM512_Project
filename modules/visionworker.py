@@ -40,7 +40,7 @@ class VisionWorker(QThread):
         self.box_history = {}    # {track_id: deque(maxlen=6)}
 
         self.running = True
-        self.is_frozen = False
+        self.is_frozen = True
         self.is_locking = False
         self.locked_target_id = None  # ID of the current "Enemy"
         self.is_firing = False
@@ -243,6 +243,7 @@ class VisionWorker(QThread):
     ###################################################################################
 
     def run(self):
+        potential_enemies = []
         self.prev_time = time.time()
         log("Running Sentry Logic Subsystem", "INFO")
         
@@ -355,19 +356,20 @@ class VisionWorker(QThread):
                 locked_target_obj = next((d for d in detections if d["id"] == self.locked_target_id), None)
                 
                 if locked_target_obj:
-                    # 2. Calculate vector (Using our Parallax math)
+                    # 1. Get raw error from your targeting_vector method
                     pan_err, tilt_err = self._calculate_targeting_vector(locked_target_obj)
-                    #print(pan_err, tilt_err)
                     
-                    # 3. Fire Command (Only fire if they are an ENEMY and we are in firing mode)
-                    # Note: We already checked they were an enemy to lock them
-                    self.transmit_to_controller(pan_err, tilt_err, self.is_firing)
+                    # 2. Get the current distance for the controller's log/logic
+                    dist = self.active_targets[self.locked_target_id].get("distance", 200.0)
+
+                    # 3. One call to handle everything
+                    self.controller.update_turret(pan_err, tilt_err, dist, self.is_firing)
                 else:
-                    # Target is gone! Purge will handle memory, but we must stop motors now.
-                    self.transmit_to_controller(0, 0, False)
+                    # Target is gone, purge will handle memory, but we must stop motors now.
+                    self.transmit_to_controller(0, 0, 0, False)
             else:
                 # No lock? Standby.
-                self.transmit_to_controller(0, 0, False)
+                self.transmit_to_controller(0, 0, 0, False)
 
             # C. Send the loop info
             self._finalize_cycle(frame, image_package, frame_events, loop_start)
@@ -468,55 +470,37 @@ class VisionWorker(QThread):
     #                              CONTROLLER EMIT
     ###################################################################################
 
+    ###################################################################################
+    #                                CONTROLLER EMIT
+    ###################################################################################
+
     def _calculate_targeting_vector(self, target):
         """
         Translates pixel coordinates and distance into physical angles.
-        Includes Parallax Correction for the camera-to-barrel offset.
+        This provides the RAW ERROR to the controller.
         """
         cx, cy = target["center"]
-        dist_cm = self.active_targets[target["id"]].get("distance", 200.0)
-
-        # 1. Get Pixel Error from Screen Center (640, 360)
+        
+        # 1. Get Pixel Error from Screen Center (1280/2, 720/2)
         dx = cx - 640
-        dy = cy - 360 # Note: In pixels, Y increases downwards
+        dy = cy - 360 
 
-        # 2. Convert Pixels to Radians (using our Focal Length)
-        # Formula: theta = arctan(pixels / focal_length)
+        # 2. Convert Pixels to Radians
+        # Uses your calibrated FOCAL_LENGTH (e.g., 1050.0)
         yaw_rad = np.arctan2(dx, config.FOCAL_LENGTH)
         pitch_rad = np.arctan2(dy, config.FOCAL_LENGTH)
 
-        # 3. PARALLAX CORRECTION (Vertical Offset)
-        # Assume camera is 10cm ABOVE the barrel
-        camera_offset_y = 10.0 
-        # At 'dist_cm', the barrel needs to tilt UP slightly more than the camera sees
-        # correction_angle = arctan(offset / distance)
-        parallax_correction = np.arctan2(camera_offset_y, dist_cm)
-        
-        # Final Pitch = Visual Pitch + Parallax Correction
-        corrected_pitch_rad = pitch_rad + parallax_correction
-
-        # 4. Convert to normalized units (-1.0 to 1.0) for the Comms module
-        # We assume our "Field of View" is the limit
-        pan_error = np.degrees(yaw_rad) / 30.0   # Normalized to a 60deg total span
-        tilt_error = np.degrees(corrected_pitch_rad) / 20.0 
+        # 3. Convert to normalized units (-1.0 to 1.0)
+        # Based on the HFOV/VFOV of the C270
+        pan_error = np.degrees(yaw_rad) / 30.0   
+        tilt_error = np.degrees(pitch_rad) / 20.0 
 
         return np.clip(pan_error, -1.0, 1.0), np.clip(tilt_error, -1.0, 1.0)
 
 
-    def transmit_to_controller(self, pan_error, tilt_error, fire_command):
+    def transmit_to_controller(self, pan_error, tilt_error, dist_cm, fire_command):
         """
-        Placeholder for PLC/Microcontroller communication.
-        pan_error: float (-1.0 to 1.0)
-        tilt_error: float (-1.0 to 1.0)
-        fire_command: bool
+        Passes targeting data to the unified TurretController.
+        The Controller handles PD damping and Omron PLC communication.
         """
-
-        # We pass the normalized floats (-1.0 to 1.0) to the controller.
-        # The controller will handle the integer conversion for the Omron registers.
-        self.controller.update_turret(pan_error, tilt_error, fire_command)
-
-        pass
-
-
-
-    
+        self.controller.update_turret(pan_error, tilt_error, dist_cm, fire_command)

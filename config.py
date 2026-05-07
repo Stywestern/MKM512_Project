@@ -4,7 +4,7 @@
 DEBUG_MODE = True               # Show video window for debugging
 
 # --- CAMERA SETTINGS ---
-CAMERA_INDEX = 0                # USB Webcam index for pixels
+CAMERA_INDEX = 1               # Change index to switch cameras
 FRAME_WIDTH = 1280              # Logitech C270 specs
 FRAME_HEIGHT = 720
 FPS = 30                        # Target framerate
@@ -13,8 +13,8 @@ FOCAL_LENGTH = 150 * 65.29 / 6.3   # Focal distance of the cam from live calibra
 # --- DETECTOR SETTINGS ---
 RUN_ON_GPU = True               # Toggle GPU usage
 DET_CONF_THRESHOLD = 0.25       # How sure the detector machine should be
-REG_CONF_THRESHOLD = 0.45       # How sure the recognizer machine should be, but reversed and between 0-2
-RETRY_INTERVAL = 10.0           # Seconds to wait before re-identifying an Unknown
+REG_CONF_THRESHOLD = 0.6       # How sure the recognizer machine should be, but reversed and between 0-2
+RETRY_INTERVAL = 5.0           # Seconds to wait before re-identifying an Unknown
 
 
 # --- DATABASE SETTINGS ---

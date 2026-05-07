@@ -5,7 +5,7 @@ PLC_IP = "192.168.0.101"
 PLC_PORT = 23000
 
 def main():
-    FIRE_STATUS = True  # True = ON, False = OFF
+    FIRE_STATUS = False  # True = ON, False = OFF
     # -----------------------------------
 
     plc = TurretPLC(PLC_IP, PLC_PORT)

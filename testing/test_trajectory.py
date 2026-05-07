@@ -12,7 +12,7 @@ def run_stepped_test():
 
     try:
         # We define the range in standard degrees
-        test_steps = list(range(-60, 70, 10))
+        test_steps = list(range(-60, 70, 1))
         
         for step_deg in test_steps:
             print(f"\n[STEP] Requesting: {step_deg}°")
@@ -22,7 +22,7 @@ def run_stepped_test():
             if success:
                 print(f"Status: Acknowledged. Moving to {step_deg}...")
             
-            time.sleep(2)
+            #time.sleep(1)
 
         plc.send_pose(0, 0)
 

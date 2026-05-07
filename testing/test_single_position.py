@@ -1,5 +1,3 @@
-import socket
-import threading
 from modules.PLC import TurretPLC 
 
 # Hardware Configuration from the Project Schematic
@@ -43,7 +41,8 @@ def run_motion_test(pan_deg, tilt_deg):
         print("Connection closed.")
 
 if __name__ == "__main__":
-    TEST_PAN = 15   # Degrees (Positive = Right)
-    TEST_TILT = 10  # Degrees (Positive =  Down)
+    # For both directions, the range of degrees is [-60, 60], if you try to give more, like 80, PLC will not register the command
+    TEST_PAN = 0  # positive is to Turret's Left
+    TEST_TILT = 0  # positive is to Turret's Down
     
     run_motion_test(TEST_PAN, TEST_TILT)

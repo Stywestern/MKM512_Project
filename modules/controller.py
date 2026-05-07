@@ -5,96 +5,247 @@
 from pycomm3 import LogixDriver
 import numpy as np
 import time
+import threading
+import queue
+import math
 
 # Modules
 from modules.utils import log
 
 ###################################################################################
 
+# modules/controller.py
+
+##################################### Imports #####################################
+# Libraries
+import numpy as np
+import time
+import threading
+import queue
+import math
+
+# Modules
+from modules.utils import log
+
+###################################################################################
+
+class ControllerThread(threading.Thread):
+    def __init__(self, plc):
+        super().__init__()
+        self.plc = plc
+        self.command_queue = queue.Queue(maxsize=1) 
+        self.running = True
+        self.daemon = True 
+
+    def run(self):
+        log("Hardware Thread: Active", "INFO")
+        
+        # 1. The Master TRY Block
+        try:
+            while self.running:
+                try:
+                    cmd = self.command_queue.get(timeout=0.05)
+                    
+                    if cmd['type'] == 'pose':
+                        self.plc.send_pose(cmd['pan'], cmd['tilt'])
+                        
+                    elif cmd['type'] == 'laser':
+                        self.plc.set_laser(cmd['state'])
+                        
+                    elif cmd['type'] == 'turret_state':
+                        # 1. Move the motors
+                        self.plc.send_pose(cmd['pan'], cmd['tilt'])
+                        
+                        # 2. Fire the laser (only if the state toggled)
+                        if cmd['update_laser']:
+                            self.plc.set_laser(cmd['laser_state'])
+                            
+                    elif cmd['type'] == 'dynamics':
+                        # Optional state transitioning hook
+                        self.plc.set_velocity(tilt_vel=cmd['vel'], pan_vel=cmd['vel'])
+                        self.plc.set_acceleration(tilt_acc=cmd['acc'], pan_acc=cmd['acc'])
+                    
+                    self.command_queue.task_done()
+                    
+                    # Smoothing governor
+                    time.sleep(0.01) 
+
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    log(f"Queue Error: {e}", "ERROR")
+                    
+        except Exception as e:
+            # Catches any fatal errors that break the while loop
+            log(f"Thread crashed: {e}", "ERROR")
+            
+        # 2. Finally Block (Guaranteed Hardware Shutdown)
+        finally:
+            log("Hardware Thread Dying: Forcing reset to 0,0 at Speed 500", "WARNING")
+            try:
+                self.plc.set_velocity(tilt_vel=500, pan_vel=500)
+                self.plc.send_pose(pan=0, tilt=0)
+                self.plc.set_laser(False)
+                self.plc.disconnect()
+                log("Hardware safely disconnected.", "SUCCESS")
+            except Exception as cleanup_error:
+                log(f"Could not complete safe exit: {cleanup_error}", "ERROR")
+
+    def issue_command(self, cmd):
+        """ Non-blocking queue entry. """
+        try:
+            if self.command_queue.full():
+                self.command_queue.get_nowait()
+            self.command_queue.put_nowait(cmd)
+        except queue.Full:
+            pass
+
+    def clear_queue(self):
+        """ Instantly drops all pending hardware commands """
+        with self.command_queue.mutex:
+            self.command_queue.queue.clear()
+        log("Hardware Thread: Command queue purged.", "WARNING")
+
+    def stop(self):
+        """ Signals the thread to finish """
+        self.running = False
+
+
 class BaseTurretController:
     """
     Abstract-style base class. 
-    Handles the 'Brain' (PD math, timing, and console logging).
+    Handles the 'Brain' (PD math and timing).
     """
     def __init__(self):
-        # PD Parameters
-        self.kp = 0.8
-        self.kd = 0.2
-        self.deadzone = 0.05
+        self.kp = 1.0  
+        self.kd = 0.05  
+        self.deadzone_deg = 0.5 
         
-        # State Memory
         self.last_error_x = 0
         self.last_error_y = 0
         self.last_time = time.time()
-        self.last_print_time = 0
 
-    def calculate_effort(self, target_x, target_y):
-        """Standard PD logic used by both Sim and Real modes."""
-        current_time = time.time()
-        dt = current_time - self.last_time
-        if dt <= 0: dt = 0.033
+    def calculate_effort(self, target_deg_x, target_deg_y):
+        # Absorb 'dt' into the constant to prevent division explosions
+        d_x = self.kd * (target_deg_x - self.last_error_x) 
+        d_y = self.kd * (target_deg_y - self.last_error_y) 
 
-        # PD Math
-        d_x = self.kd * (target_x - self.last_error_x) / dt
-        d_y = self.kd * (target_y - self.last_error_y) / dt
+        delta_pan = (self.kp * target_deg_x) + d_x
+        delta_tilt = (self.kp * target_deg_y) + d_y
 
-        effort_x = np.clip(self.kp * target_x + d_x, -1.0, 1.0)
-        effort_y = np.clip(self.kp * target_y + d_y, -1.0, 1.0)
-
-        # Update Memory
-        self.last_error_x = target_x
-        self.last_error_y = target_y
-        self.last_time = current_time
+        self.last_error_x = target_deg_x
+        self.last_error_y = target_deg_y
         
-        return effort_x, effort_y
-
-    def log_status(self, target_x, target_y, effort_x, effort_y, dist_cm, fire_cmd):
-        """Throttled 1Hz console print."""
-        current_time = time.time()
-        if current_time - self.last_print_time >= 1.0:
-            print(f"\n[SYSTEM STATUS - {time.strftime('%H:%M:%S')}]")
-            print(f"| ERROR:  X: {int(target_x*640):4d}px | Y: {int(target_y*360):4d}px")
-            print(f"| EFFORT: Pan: {effort_x:+.3f} | Tilt: {effort_y:+.3f}")
-            print(f"| TARGET: Dist: {dist_cm:5.1f}cm | Laser: {'ACTIVE' if fire_cmd else 'OFF'}")
-            print("-" * 50)
-            self.last_print_time = current_time
-
-    def update_turret(self, target_x, target_y, dist_cm, fire_cmd):
-        """Simulation default: Do the math and print, but don't send bytes."""
-        ex, ey = self.calculate_effort(target_x, target_y)
-        self.log_status(target_x, target_y, ex, ey, dist_cm, fire_cmd)
-        return ex, ey
+        return delta_pan, delta_tilt
 
 
 class RealTurretController(BaseTurretController):
     """
     Hardware-active class. 
-    Inherits the brain, but adds the 'Body' (PLC communication).
+    Uses a background thread to prevent socket blocking from killing AI FPS.
     """
     def __init__(self, plc_ref):
         super().__init__()
-        self.plc = plc_ref # Reference to TurretPLC class
+        self.plc = plc_ref
         self.is_firing_latched = False
-        log("Controller: PHYSICAL hardware linked", "INFO")
+        
+        # 1. Unified Kinematic State
+        self.current_pan = 0.0  
+        self.current_tilt = 0.0
+        self.overwatch_dir = "left"
 
-    def update_turret(self, target_x, target_y, dist_cm, fire_cmd):
-        # 1. Use the Base class for the math
-        ex, ey = super().update_turret(target_x, target_y, dist_cm, fire_cmd)
+        # 2. Camera Physical Properties (Absolute Scaling)
+        self.cam_res_x = 720.0
+        self.cam_res_y = 1280.0
+        self.fov_pan = 60.0   
+        self.fov_tilt = 40.0  
 
-        # 2. Deadzone filter
-        out_x = 0 if abs(ex) < self.deadzone else ex
-        out_y = 0 if abs(ey) < self.deadzone else ey
+        # Calculate Degrees per Pixel
+        self.deg_per_pixel_x = self.fov_pan / self.cam_res_x
+        self.deg_per_pixel_y = self.fov_tilt / self.cam_res_y
 
-        # 3. Physical Transmission (The PLC-specific part)
+        # Initialize and Start Hardware Thread
+        self.hw_thread = ControllerThread(self.plc)
+        self.hw_thread.start()
+
+        log("Controller: PHYSICAL hardware linked via Background Thread", "INFO")
+
+    def perform_overwatch(self):
+        """ Sweeps the unified pan variable. """
+        if not self.plc or not self.plc.connected:
+            return
+        
+        sweep_speed = 2.0
+        sweep_range = 10.0
+
+        if self.overwatch_dir == "left":
+            self.current_pan += sweep_speed
+            if self.current_pan >= sweep_range:
+                self.current_pan = sweep_range
+                self.overwatch_dir = "right"
+        else:
+            self.current_pan -= sweep_speed
+            if self.current_pan <= -sweep_range:
+                self.current_pan = -sweep_range
+                self.overwatch_dir = "left"
+
+        self.hw_thread.issue_command({
+            'type': 'pose', 
+            # Explicit float casts to avoid numpy serialization errors
+            'pan': float(self.current_pan), 
+            'tilt': float(self.current_tilt)
+        })
+
+    def update_turret(self, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
+        """ 
+        Translates raw ABSOLUTE pixel error into accumulated hardware commands. 
+        """
+        # 1. Absolute Scaling: Convert pixels directly to degrees
+        deg_error_x = pixel_err_x * self.deg_per_pixel_x
+        deg_error_y = pixel_err_y * self.deg_per_pixel_y
+
+        # 2. Get the delta step from the PD Brain
+        delta_pan, delta_tilt = super().calculate_effort(deg_error_x, deg_error_y)
+
+        # 3. Deadzone filter (Stops micro-jitters)
+        delta_pan = 0 if abs(delta_pan) < self.deadzone_deg else delta_pan
+        delta_tilt = 0 if abs(delta_tilt) < self.deadzone_deg else delta_tilt
+
+        # 4. Accumulate the step into the physical state
+        self.current_pan += delta_pan
+        self.current_tilt += delta_tilt
+
+        # 5. Hardware Safety Clamps
+        self.current_pan = max(-60.0, min(60.0, self.current_pan))
+        self.current_tilt = max(-40.0, min(40.0, self.current_tilt))
+
+        # 6. Kinematic Parallax Correction
+        parallax_angle = 1
+        final_tilt = self.current_tilt - parallax_angle
+
+        # --- DIAGNOSTIC TELEMETRY PRINT ---
+        print(f"[TRACKING] Err(px): x={pixel_err_x:+.1f}, y={pixel_err_y:+.1f} | "
+              f"Err(deg): x={deg_error_x:+.2f}, y={deg_error_y:+.2f} | "
+              f"Step: pan={delta_pan:+.2f}, tilt={delta_tilt:+.2f} | "
+              f"New Pos: pan={self.current_pan:+.2f}, tilt={self.current_tilt:+.2f} | " 
+              f"Fire: {fire_cmd}")
+
+        # 7. Physical Transmission via Thread
         if self.plc and self.plc.connected:
-            # Scale -1.0/1.0 effort to -30/30 degrees
-            # send_pose internally handles the % 360 logic
-            self.plc.send_pose(out_x * 30, out_y * 20)
             
-            # Handle Laser Latching
+            update_relay = False
             if fire_cmd and not self.is_firing_latched:
-                self.plc.set_laser(True)
+                update_relay = True
                 self.is_firing_latched = True
             elif not fire_cmd and self.is_firing_latched:
-                self.plc.set_laser(False)
+                update_relay = True
                 self.is_firing_latched = False
+
+            # Send ONE unified command packet to the queue (fully cast to python floats)
+            self.hw_thread.issue_command({
+                'type': 'turret_state', 
+                'pan': float(self.current_pan), 
+                'tilt': float(final_tilt),
+                'update_laser': update_relay,
+                'laser_state': fire_cmd
+            })

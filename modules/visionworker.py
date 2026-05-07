@@ -77,11 +77,10 @@ class VisionWorker(QThread):
             if tid in self.box_history:
                 del self.box_history[tid]
                 
-            # 3. If locked, release the system
+            # 3. Do not remove the lock
             if tid == self.locked_target_id:
-                self.locked_target_id = None
                 self.is_firing = False
-                log(f"TARGET LOST: ID {tid} removed. System returning to Overwatch.", "INFO")
+                log(f"TARGET LOST: ID {tid} temporarily occluded. Holding position.", "WARNING")
             else:
                 log(f"Memory Cleared: ID {tid} (Stale)", "DEBUG")
 
@@ -197,10 +196,10 @@ class VisionWorker(QThread):
         
         # 1. Determine if this is the ACTIVE engagement target
         is_locked_target = (track_id == self.locked_target_id)
-        is_actively_firing = (is_locked_target and self.is_firing)
+        is_firing = (is_locked_target and self.is_firing)
         
         # Visual thickness increases when firing for 'recoil' effect
-        thickness = 4 if is_actively_firing else 2
+        thickness = 4 if is_firing else 2
 
         # 2. Draw Bounding Box & Identity Header
         cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
@@ -214,7 +213,7 @@ class VisionWorker(QThread):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
         # 4. Engagement Crosshair (Only if firing)
-        if is_actively_firing:
+        if is_firing:
             cx, cy = target["center"]
             # Red crosshair centered on the smoothed face center
             cv2.line(frame, (cx - 25, cy), (cx + 25, cy), (0, 0, 255), thickness)
@@ -247,6 +246,34 @@ class VisionWorker(QThread):
         sleep_duration = max(1, int((target_period - processing_time) * 1000))
         self.msleep(sleep_duration)
 
+    def _draw_kinematic_debug(self, frame, target, x_diff, y_diff):
+        """
+        Draws visual markers to debug the pixel-to-motor coordinate mapping.
+        Assumes portrait 720x1280 resolution.
+        """
+        cx, cy = target["center"]
+        
+        # The assumed physical center of your rotated frame
+        center_x = 360
+        center_y = 640
+        
+        # 1. Draw the assumed screen center (Blue Dot)
+        cv2.circle(frame, (center_x, center_y), 6, (255, 0, 0), -1)
+        cv2.putText(frame, "CENTER", (center_x + 10, center_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+        # 2. Draw the face center (Green Dot)
+        cv2.circle(frame, (cx, cy), 6, (0, 255, 0), -1)
+        
+        # 3. Draw the error vector line (Yellow Line)
+        cv2.line(frame, (center_x, center_y), (cx, cy), (0, 255, 255), 2)
+
+        # 4. Display the normalized math being sent to the controller
+        debug_text = f"Nx: {x_diff:+.2f} | Ny: {y_diff:+.2f}"
+        cv2.putText(frame, debug_text, (cx + 10, cy + 25), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            
+
     ###################################################################################
     #                                 MAIN LOOP
     ###################################################################################
@@ -255,7 +282,16 @@ class VisionWorker(QThread):
         potential_enemies = []
         self.prev_time = time.time()
         log("Running Sentry Logic Subsystem", "INFO")
-        
+
+        # Boot turret overwatch
+        if self.plc.connected:
+            log("BOOT: Initializing Overwatch Sweep...", "INFO")
+            # Set the initial position and dynamics 
+            self.plc.send_pose(0, 0)
+
+            self.plc.set_velocity(tilt_vel=500, pan_vel=20)
+            self.plc.set_acceleration(tilt_acc=500, pan_acc=100)
+
         while self.running:
             loop_start = time.time()
             
@@ -347,6 +383,10 @@ class VisionWorker(QThread):
                     # -------------- VISUALIZATION (START) ----------------------- 
                     self._draw_target_hud(frame, target, name, affiliation, color, current_dist or 200.0)
 
+                    pan_err, tilt_err = self._calculate_targeting_vector(target)
+
+                    self._draw_kinematic_debug(frame, target, pan_err, tilt_err)
+
                     # -------------- VISUALIZATION (END) ----------------------- 
 
 # --------------------------------- Step C (Ends): End loop for one target ----------------------------------------
@@ -361,24 +401,24 @@ class VisionWorker(QThread):
             # B. Send data to the PLC
             if self.locked_target_id is not None:
                 # 1. Find the target dictionary in the CURRENT detections list
-                # We need the current frame's center (scx, scy)
                 locked_target_obj = next((d for d in detections if d["id"] == self.locked_target_id), None)
                 
                 if locked_target_obj:
-                    # 1. Get raw error from your targeting_vector method
+                    # Target is visible
                     pan_err, tilt_err = self._calculate_targeting_vector(locked_target_obj)
-                    
-                    # 2. Get the current distance for the controller's log/logic
                     dist = self.active_targets[self.locked_target_id].get("distance", 200.0)
 
-                    # 3. One call to handle everything
                     self.controller.update_turret(pan_err, tilt_err, dist, self.is_firing)
                 else:
-                    # Target is gone, purge will handle memory, but we must stop motors now.
-                    self.transmit_to_controller(0, 0, 0, False)
+                    # Fetch last known distance so the UI doesn't glitch to 0.0
+                    last_dist = self.active_targets.get(self.locked_target_id, {}).get("distance", 200.0)
+                    
+                    # Update turret with 0.0 error (adds 0 to current pos)
+                    self.controller.update_turret(0.0, 0.0, last_dist, False)
             else:
-                # No lock? Standby.
-                self.transmit_to_controller(0, 0, 0, False)
+                # No lock? Overwatch.
+                if self.plc.connected:
+                    self.controller.perform_overwatch()
 
             # C. Send the loop info
             self._finalize_cycle(frame, image_package, frame_events, loop_start)
@@ -481,27 +521,21 @@ class VisionWorker(QThread):
 
     def _calculate_targeting_vector(self, target):
         """
-        Translates pixel coordinates and distance into physical angles.
-        This provides the RAW ERROR to the controller.
+        Pure Sensor Logic: Returns normalized pixel error [-1.0 to 1.0].
+        Assumes an upright portrait orientation (e.g., 720x1280).
         """
         cx, cy = target["center"]
         
-        # 1. Get Pixel Error from Screen Center (1280/2, 720/2)
-        dx = cx - 640
-        dy = cy - 360 
+        # 1. Update Centers for Portrait Mode
+        # If your res is different, change these to (width/2) and (height/2)
+        center_x = 360.0 
+        center_y = 640.0
+        
+        # 2. Raw Pixel Error
+        dx = center_x - cx
+        dy = cy - center_y 
 
-        # 2. Convert Pixels to Radians
-        # Uses your calibrated FOCAL_LENGTH (e.g., 1050.0)
-        yaw_rad = np.arctan2(dx, config.FOCAL_LENGTH)
-        pitch_rad = np.arctan2(dy, config.FOCAL_LENGTH)
-
-        # 3. Convert to normalized units (-1.0 to 1.0)
-        # Based on the HFOV/VFOV of the C270
-        pan_error = np.degrees(yaw_rad) / 30.0   
-        tilt_error = np.degrees(pitch_rad) / 20.0 
-
-        return np.clip(pan_error, -1.0, 1.0), np.clip(tilt_error, -1.0, 1.0)
-
+        return dx, dy
 
     def transmit_to_controller(self, pan_error, tilt_error, dist_cm, fire_command):
         """

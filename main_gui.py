@@ -1,4 +1,4 @@
-#main.py
+#main_gui.py
 
 try:
     import onnxruntime as ort
@@ -17,7 +17,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 # Modules
-from modules.camera import CameraStream
+from modules.camera import CameraStream, RotatedCameraStream
 from modules.interface import SentryHUD
 from modules.visionworker import VisionWorker
 from modules.utils import log

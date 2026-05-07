@@ -1,4 +1,4 @@
-# modules/interface.py
+# modules/visionworker.py
 
 ##################################### Imports #####################################
 # Standart Libraries
@@ -17,7 +17,8 @@ from modules.utils import log, create_event
 from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
 from modules.tracker import BoTSORTTracker, ByteTrackTracker
 from modules.recognizer import TurretRecognizer
-from modules.controller import TurretController
+from modules.controller import RealTurretController, BaseTurretController
+from modules.PLC import TurretPLC
 
 ###################################################################################
 
@@ -32,7 +33,15 @@ class VisionWorker(QThread):
         self.detector = SCRFDDetector() # RetinaDetector, SCRFDDetector, YOLODetector
         self.tracker = BoTSORTTracker() # ByteTrackTracker
         self.recognizer = TurretRecognizer()
-        self.controller = TurretController(simulation=True)
+
+        self.plc = TurretPLC(ip="192.168.0.101", port=23000)
+        if self.plc.connect():
+            log("HARDWARE: PLC Connected. Physical turret ACTIVE.", "INFO")
+            self.controller = RealTurretController(self.plc)
+        else:
+            log("HARDWARE: PLC Offline. Running in SIMULATION MODE.", "WARNING")
+            self.controller = BaseTurretController()
+
 
         self.prev_time = 0
         self.active_targets = {}
@@ -470,10 +479,6 @@ class VisionWorker(QThread):
     #                              CONTROLLER EMIT
     ###################################################################################
 
-    ###################################################################################
-    #                                CONTROLLER EMIT
-    ###################################################################################
-
     def _calculate_targeting_vector(self, target):
         """
         Translates pixel coordinates and distance into physical angles.
@@ -500,7 +505,7 @@ class VisionWorker(QThread):
 
     def transmit_to_controller(self, pan_error, tilt_error, dist_cm, fire_command):
         """
-        Passes targeting data to the unified TurretController.
-        The Controller handles PD damping and Omron PLC communication.
+        Passes targeting data to the controller. 
+        If PLC is offline, this call safely does nothing or logs simulation data.
         """
         self.controller.update_turret(pan_error, tilt_error, dist_cm, fire_command)

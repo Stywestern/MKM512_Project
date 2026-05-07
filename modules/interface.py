@@ -76,7 +76,7 @@ class SentryHUD(QMainWindow):
 
             # --- ROW 1: PRIMARY ACTIONS ---
         self.primary_btn_layout = QHBoxLayout()
-        self.stop_btn = QPushButton("STOP") # Switch between STOP and RESUME
+        self.stop_btn = QPushButton("RESUME") # Switch between STOP and RESUME
         self.restart_btn = QPushButton("RESTART")
         self.release_btn = QPushButton("LOCK-IN") # Switch between LOCK-IN and RELEASE
         self.fire_btn = QPushButton("FIRE")
@@ -131,18 +131,16 @@ class SentryHUD(QMainWindow):
         self.fire_btn.clicked.connect(self.handle_fire)
 
     def handle_stop(self):
-        """ Stops the AI part, enabling us to see the camera unaltered (mostly for fps comparison) """
+        """ Stops the AI part and updates text without overriding global styles """
         is_now_frozen = self.worker.toggle_freeze() # Worker logic
 
         if is_now_frozen:
-            self.stop_btn.setText("RESUME")
-            self.stop_btn.setStyleSheet("background-color: #444; color: yellow;")
-            self.history_list.append("<font color='yellow'>[SYSTEM PAUSED]</font>")
+            self.stop_btn.setText("RESUME") 
+            self.history_list.append("[SYSTEM PAUSED]")
         else:
             self.stop_btn.setText("STOP")
-            self.stop_btn.setStyleSheet("background-color: #222; color: white;")
-            self.history_list.append("<font color='white'>[SYSTEM RESUMED]</font>")
-
+            self.history_list.append("[SYSTEM RESUMED]")
+    
     def handle_restart(self):
         """ Purge AI memory, forcing it to run recognition again on all faces """
         #self.history_list.clear()

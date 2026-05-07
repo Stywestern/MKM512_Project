@@ -4,7 +4,7 @@
 DEBUG_MODE = True               # Show video window for debugging
 
 # --- CAMERA SETTINGS ---
-CAMERA_INDEX = 1               # Change index to switch cameras
+CAMERA_INDEX = 0               # Change index to switch cameras
 FRAME_WIDTH = 1280              # Logitech C270 specs
 FRAME_HEIGHT = 720
 FPS = 30                        # Target framerate

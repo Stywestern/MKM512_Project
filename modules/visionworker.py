@@ -17,7 +17,7 @@ from modules.utils import log, create_event
 from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
 from modules.tracker import BoTSORTTracker, ByteTrackTracker
 from modules.recognizer import TurretRecognizer
-from modules.controller import RealTurretController, BaseTurretController
+from modules.controller import RealTurretController, SimTurretController
 from modules.PLC import TurretPLC
 
 ###################################################################################
@@ -40,7 +40,7 @@ class VisionWorker(QThread):
             self.controller = RealTurretController(self.plc)
         else:
             log("HARDWARE: PLC Offline. Running in SIMULATION MODE.", "WARNING")
-            self.controller = BaseTurretController()
+            self.controller = SimTurretController()
 
 
         self.prev_time = 0
@@ -62,12 +62,23 @@ class VisionWorker(QThread):
 
     def _purge_stale_targets(self, current_ids):
         """
-        Cleans up memory for targets no longer detected in the current frame.
-        Ensures Weapon Safety by revoking locks on lost targets.
+        Cleans up memory for targets no longer detected.
+        Uses a 2.0 second Grace Period to survive micro-stutters and tracker buffering.
         """
-        # Create a list of IDs to remove to avoid 
-        targets_to_remove = [tid for tid in self.active_targets if tid not in current_ids]
+        current_time = time.time()
+        targets_to_remove = []
+        
+        # Determine who has been missing for too long
+        for tid, data in self.active_targets.items():
+            if tid not in current_ids:
+                # Target is missing this frame. Check the grace period.
+                time_lost = current_time - data.get("last_seen", current_time)
+                
+                # If lost for more than 2 seconds, mark for permanent deletion
+                if time_lost > 2.0:
+                    targets_to_remove.append(tid)
 
+        # Execute the purge only on truly dead targets
         for tid in targets_to_remove:
             # 1. Clear Identity and Distance Memory
             if tid in self.active_targets:
@@ -77,13 +88,13 @@ class VisionWorker(QThread):
             if tid in self.box_history:
                 del self.box_history[tid]
                 
-            # 3. Do not remove the lock
+            # 3. Drop the lock so the Arbitrator can acquire new targets!
             if tid == self.locked_target_id:
+                self.locked_target_id = None
                 self.is_firing = False
-                log(f"TARGET LOST: ID {tid} temporarily occluded. Holding position.", "WARNING")
+                log(f"TARGET LOST: ID {tid} completely removed. Lock released.", "WARNING")
             else:
                 log(f"Memory Cleared: ID {tid} (Stale)", "DEBUG")
-
 
     def _apply_temporal_smoothing(self, target):
         """
@@ -283,7 +294,7 @@ class VisionWorker(QThread):
         self.prev_time = time.time()
         log("Running Sentry Logic Subsystem", "INFO")
 
-        # Boot turret overwatch
+        # Boot turret 
         if self.plc.connected:
             log("BOOT: Initializing Overwatch Sweep...", "INFO")
             # Set the initial position and dynamics 
@@ -350,12 +361,14 @@ class VisionWorker(QThread):
                         # C.3. Update emittion data
                         image_package = [detector_crop, aligned_face]
                         
-                        self.active_targets[track_id] = {"name": name, "last_auth": current_time, "distance": current_dist or 200.0}
+                        self.active_targets[track_id] = {"name": name, "last_auth": current_time, "distance": current_dist or 200.0, "last_seen": current_time}
 
                         best_filename = sorted(distances.items(), key=lambda x: x[1])[0][0]
                         person_dir = best_filename.rsplit("_", 1)[0]
                         ref_path = os.path.join("assets", "faces", "debug_aligned", person_dir, f"aligned_{best_filename}")
                         frame_events.append(create_event("RECOGNITION", track_id=track_id, name=name, distances=distances, ref_path=ref_path))
+
+                        log(f"New Recognition: {name}", "DEBUG")
 
                     # POSSIBILITY 3: Already Tracking (Send frame, [crop, empty])
                     else:
@@ -363,6 +376,7 @@ class VisionWorker(QThread):
                         if current_dist is not None:
                             self.active_targets[track_id]["distance"] = current_dist
 
+                        self.active_targets[track_id]["last_seen"] = current_time
                         name = self.active_targets[track_id]["name"]
 
                     # C.4. Determine Affiliation
@@ -421,6 +435,7 @@ class VisionWorker(QThread):
                     self.controller.perform_overwatch()
 
             # C. Send the loop info
+            #print(self.locked_target_id)
             self._finalize_cycle(frame, image_package, frame_events, loop_start)
         
     ###################################################################################

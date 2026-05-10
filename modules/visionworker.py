@@ -45,7 +45,7 @@ class VisionWorker(QThread):
 
         self.prev_time = 0
         self.active_targets = {}
-        self.box_window_size = 6 # Tuning: Higher = Smoother, but more lag
+        self.box_window_size = 2 # Tuning: Higher = Smoother, but more lag
         self.box_history = {}    # {track_id: deque(maxlen=6)}
 
         self.running = True
@@ -260,13 +260,12 @@ class VisionWorker(QThread):
     def _draw_kinematic_debug(self, frame, target, x_diff, y_diff):
         """
         Draws visual markers to debug the pixel-to-motor coordinate mapping.
-        Assumes portrait 720x1280 resolution.
         """
         cx, cy = target["center"]
         
         # The assumed physical center of your rotated frame
-        center_x = 360
-        center_y = 640
+        center_x = config.FRAME_WIDTH // 2
+        center_y = config.FRAME_HEIGHT // 2
         
         # 1. Draw the assumed screen center (Blue Dot)
         cv2.circle(frame, (center_x, center_y), 6, (255, 0, 0), -1)
@@ -543,8 +542,8 @@ class VisionWorker(QThread):
         
         # 1. Update Centers for Portrait Mode
         # If your res is different, change these to (width/2) and (height/2)
-        center_x = 360.0 
-        center_y = 640.0
+        center_x = config.FRAME_WIDTH // 2 
+        center_y = config.FRAME_HEIGHT // 2
         
         # 2. Raw Pixel Error
         dx = center_x - cx

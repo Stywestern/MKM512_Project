@@ -140,8 +140,8 @@ class SimTurretController:
         self.overwatch_dir = "left"
 
         # 4. Virtual Camera Physical Properties
-        self.cam_res_x = 720.0
-        self.cam_res_y = 1280.0
+        self.cam_res_x = 1920.0
+        self.cam_res_y = 1080.0
         self.fov_pan = 60.0   
         self.fov_tilt = 40.0  
 
@@ -241,8 +241,8 @@ class RealTurretController:
         self.overwatch_dir = "left"
 
         # 4. Camera Physical Properties
-        self.cam_res_x = 720.0
-        self.cam_res_y = 1280.0
+        self.cam_res_x = 1920.0
+        self.cam_res_y = 1080.0
         self.fov_pan = 60.0   
         self.fov_tilt = 40.0  
 

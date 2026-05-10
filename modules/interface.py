@@ -12,11 +12,9 @@ from PyQt6.QtGui import QImage, QPixmap
 import cv2
 
 # Modules
-import config
 from modules.utils import log, opencv_to_qpixmap
 
 ###################################################################################
-
 
 class SentryHUD(QMainWindow):
     def __init__(self, worker_ref):
@@ -109,8 +107,8 @@ class SentryHUD(QMainWindow):
         # --- SET GENERAL LAYOUT ---
         self.layout.addLayout(self.left_col, 0, 0)
         self.layout.addLayout(self.right_col, 0, 1)
-        self.layout.setColumnStretch(0, 4)
-        self.layout.setColumnStretch(1, 6)
+        self.layout.setColumnStretch(0, 3) # Changed from 4 to 3
+        self.layout.setColumnStretch(1, 7) # Changed from 6 to 7
 
         log("SentryHUD Layout Anchored", "INFO")
 

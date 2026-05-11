@@ -42,7 +42,7 @@ def run_motion_test(pan_deg, tilt_deg):
 
 if __name__ == "__main__":
     # For both directions, the range of degrees is [-60, 60], if you try to give more, like 80, PLC will not register the command
-    TEST_PAN = 0  # positive is to Turret's Left
+    TEST_PAN = 30  # positive is to Turret's Left
     TEST_TILT = 0  # positive is to Turret's Down
     
     run_motion_test(TEST_PAN, TEST_TILT)

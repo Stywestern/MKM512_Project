@@ -5,7 +5,7 @@ PLC_IP = "192.168.0.101"
 PLC_PORT = 23000
 
 def main():
-    FIRE_STATUS = False  # True = ON, False = OFF
+    FIRE_STATUS = True  # True = ON, False = OFF
     # -----------------------------------
 
     plc = TurretPLC(PLC_IP, PLC_PORT)
@@ -22,6 +22,8 @@ def main():
         # set_laser(True) maps to 0x0B (SetF)
         # set_laser(False) maps to 0x0C (ResetF)
         success = plc.set_laser(FIRE_STATUS)
+
+        plc.send_pose(-30, 0)
 
         if success:
             print(f"PLC ACK: Laser is now {action}.")

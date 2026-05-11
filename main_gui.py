@@ -30,7 +30,7 @@ def main():
     log("App initialized", "INFO")
 
     log("Initializing CameraStream... ", "INFO")
-    shared_cam = CameraStream().start() # cam init
+    shared_cam = RotatedCameraStream().start() # cam init
     
     # 1. Create instances
     log("Initializing VisionWorker... ", "INFO")

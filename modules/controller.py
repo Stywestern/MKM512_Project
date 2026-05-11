@@ -11,6 +11,7 @@ import math
 
 # Modules
 from modules.utils import log
+import config
 
 ###################################################################################
 
@@ -140,8 +141,8 @@ class SimTurretController:
         self.overwatch_dir = "left"
 
         # 4. Virtual Camera Physical Properties
-        self.cam_res_x = 1920.0
-        self.cam_res_y = 1080.0
+        self.cam_res_x = config.FRAME_WIDTH
+        self.cam_res_y = config.FRAME_HEIGHT
         self.fov_pan = 60.0   
         self.fov_tilt = 40.0  
 
@@ -219,21 +220,22 @@ class SimTurretController:
 
 class RealTurretController:
     """
-    Hardware-active class. 
-    Uses a background thread to prevent socket blocking from killing AI FPS.
+    Standalone Hardware-active class. 
+    Handles all PD math, kinematic state, and hardware thread queuing internally.
     """
     def __init__(self, plc_ref):
         self.plc = plc_ref
         self.is_firing_latched = False
         
-        # 1. PD Parameters
-        self.kp = 1.0  
-        self.kd = 0.05  
-        self.deadzone_deg = 0.5 
+        # 1. PD Parameters (Tuned for smooth, continuous pursuit)
+        self.kp = 0.07      
+        self.kd = 0.02      
+        self.deadzone_deg = 1.5 
         
         # 2. Mathematical Memory
-        self.last_error_x = 0
-        self.last_error_y = 0
+        self.last_error_x = 0.0
+        self.last_error_y = 0.0
+        self.last_time = time.time()
         
         # 3. Unified Kinematic State
         self.current_pan = 0.0  
@@ -241,8 +243,8 @@ class RealTurretController:
         self.overwatch_dir = "left"
 
         # 4. Camera Physical Properties
-        self.cam_res_x = 1920.0
-        self.cam_res_y = 1080.0
+        self.cam_res_x = config.FRAME_WIDTH
+        self.cam_res_y = config.FRAME_HEIGHT
         self.fov_pan = 60.0   
         self.fov_tilt = 40.0  
 
@@ -256,21 +258,47 @@ class RealTurretController:
         log("Controller: PHYSICAL hardware linked via Background Thread", "INFO")
 
     def calculate_effort(self, target_deg_x, target_deg_y):
-        """ Standard PD logic operating in degrees. """
-        d_x = self.kd * (target_deg_x - self.last_error_x) 
-        d_y = self.kd * (target_deg_y - self.last_error_y) 
+        """ Robust PD logic operating in degrees with dt normalization. """
+        current_time = time.time()
+        dt = current_time - self.last_time
+        if dt <= 0.001: dt = 0.033 
 
+        # Input Deadzone (Ignores minor sensor jitter)
+        if abs(target_deg_x) < self.deadzone_deg: target_deg_x = 0.0
+        if abs(target_deg_y) < self.deadzone_deg: target_deg_y = 0.0
+
+        # Derivative Math
+        d_x = self.kd * (target_deg_x - self.last_error_x) / dt
+        d_y = self.kd * (target_deg_y - self.last_error_y) / dt
+
+        # Proportional + Derivative
         delta_pan = (self.kp * target_deg_x) + d_x
         delta_tilt = (self.kp * target_deg_y) + d_y
 
+        # Kinematic Safety Clamps (Max 4 degrees of step per frame)
+        delta_pan = max(-4.0, min(4.0, delta_pan))
+        delta_tilt = max(-4.0, min(4.0, delta_tilt))
+
+        # Update Memory
         self.last_error_x = target_deg_x
         self.last_error_y = target_deg_y
+        self.last_time = current_time
         
         return delta_pan, delta_tilt
 
     def perform_overwatch(self):
         """ Sweeps the unified pan variable and sends to PLC. """
         if not self.plc or not self.plc.connected:
+            return
+            
+        # Gracefully return tilt to 0 when falling back to overwatch
+        if abs(self.current_tilt) > 0.1:
+            self.current_tilt = 0.0
+            self.hw_thread.issue_command({
+                'type': 'pose',
+                'pan': float(self.current_pan),
+                'tilt': 0.0
+            })
             return
         
         sweep_speed = 2.0
@@ -298,14 +326,14 @@ class RealTurretController:
         deg_error_x = pixel_err_x * self.deg_per_pixel_x
         deg_error_y = pixel_err_y * self.deg_per_pixel_y
 
+        # Get the safe, time-normalized delta step
         delta_pan, delta_tilt = self.calculate_effort(deg_error_x, deg_error_y)
 
-        delta_pan = 0 if abs(delta_pan) < self.deadzone_deg else delta_pan
-        delta_tilt = 0 if abs(delta_tilt) < self.deadzone_deg else delta_tilt
-
+        # Accumulate the step into the physical state
         self.current_pan += delta_pan
         self.current_tilt += delta_tilt
 
+        # Absolute Hardware Axis Clamps
         self.current_pan = max(-60.0, min(60.0, self.current_pan))
         self.current_tilt = max(-40.0, min(40.0, self.current_tilt))
 
@@ -320,9 +348,15 @@ class RealTurretController:
 
         if self.plc and self.plc.connected:
             update_relay = False
+
+            """print("relay:", update_relay)
+            print("fire latch", self.is_firing_latched)
+            print("fire cmd", fire_cmd)"""
+
             if fire_cmd and not self.is_firing_latched:
                 update_relay = True
                 self.is_firing_latched = True
+
             elif not fire_cmd and self.is_firing_latched:
                 update_relay = True
                 self.is_firing_latched = False

@@ -264,8 +264,8 @@ class VisionWorker(QThread):
         cx, cy = target["center"]
         
         # The assumed physical center of your rotated frame
-        center_x = config.FRAME_WIDTH // 2
-        center_y = config.FRAME_HEIGHT // 2
+        center_x = config.FRAME_HEIGHT // 2
+        center_y = config.FRAME_WIDTH // 2
         
         # 1. Draw the assumed screen center (Blue Dot)
         cv2.circle(frame, (center_x, center_y), 6, (255, 0, 0), -1)
@@ -298,6 +298,7 @@ class VisionWorker(QThread):
             log("BOOT: Initializing Overwatch Sweep...", "INFO")
             # Set the initial position and dynamics 
             self.plc.send_pose(0, 0)
+            #self.plc.set_laser(False)
 
             self.plc.set_velocity(tilt_vel=500, pan_vel=20)
             self.plc.set_acceleration(tilt_acc=500, pan_acc=100)
@@ -513,9 +514,11 @@ class VisionWorker(QThread):
 
     def trigger_fire(self):
         """Master trigger: Only works if locked target is an ENEMY"""
+
         if self.locked_target_id is not None:
             # Double-check affiliation before pulling the trigger
             target_data = self.active_targets.get(self.locked_target_id)
+
             if target_data and target_data["name"] in config.ENEMIES:
                 self.is_firing = not self.is_firing
                 status = "FIRE" if self.is_firing else "CEASE FIRE"
@@ -542,8 +545,8 @@ class VisionWorker(QThread):
         
         # 1. Update Centers for Portrait Mode
         # If your res is different, change these to (width/2) and (height/2)
-        center_x = config.FRAME_WIDTH // 2 
-        center_y = config.FRAME_HEIGHT // 2
+        center_x = config.FRAME_HEIGHT // 2 
+        center_y = config.FRAME_WIDTH // 2
         
         # 2. Raw Pixel Error
         dx = center_x - cx

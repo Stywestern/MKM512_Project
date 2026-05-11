@@ -14,6 +14,8 @@ class TurretPLC:
         # Unified system state
         self.errors = {"EmergencyStop": False, "LimitSwitch": False}
         self.current_pos = {"pan": 0, "tilt": 0}
+
+        self.current_laser_state = False
         
         self.FN_POSE = 0x01
         self.FN_VEL = 0x05
@@ -28,7 +30,7 @@ class TurretPLC:
         """Initializes TCP/IP Socket connection to the Omron NX1P2"""
         try:
             self.socket_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket_client.settimeout(15.0)
+            self.socket_client.settimeout(3)
             self.socket_client.connect((self.ip, self.port))
             self.connected = True
             log(f"PLC: Connected to {self.ip}:{self.port}", "INFO")

@@ -129,60 +129,95 @@ class SentryHUD(QMainWindow):
         self.fire_btn.clicked.connect(self.handle_fire)
 
     def handle_stop(self):
-        """ Stops the AI part and updates text without overriding global styles """
-        is_now_frozen = self.worker.toggle_freeze() # Worker logic
+        """ Stops the AI part, but prevents pausing if actively firing. """
+        
+        # SAFETY CHECK: Cannot pause system while weapon is actively firing
+        if getattr(self.worker, 'is_firing', False):
+            self.history_list.append("<b style='color:red;'>[ERROR] CEASE FIRE BEFORE PAUSING SYSTEM</b>")
+            return
+
+        is_now_frozen = self.worker.toggle_freeze() 
 
         if is_now_frozen:
             self.stop_btn.setText("RESUME") 
             self.history_list.append("[SYSTEM PAUSED]")
+
+            # Lock out dangerous controls while paused
+            self.release_btn.setEnabled(False)
+            self.fire_btn.setEnabled(False)
         else:
             self.stop_btn.setText("STOP")
             self.history_list.append("[SYSTEM RESUMED]")
+
+            # Restore state based on whether we were locked or not
+            self.release_btn.setEnabled(True)
+            if self.worker.is_locking:
+                self.fire_btn.setEnabled(True)
     
     def handle_restart(self):
-        """ Purge AI memory, forcing it to run recognition again on all faces """
-        #self.history_list.clear()
-
-        self.worker.reset_tracking_data() # Worker logic
+        # Prevent restart if actively firing
+        if getattr(self.worker, 'is_firing', False):
+            self.history_list.append("<b style='color:red;'>[ERROR] CEASE FIRE BEFORE REBOOTING</b>")
+            return
+            
+        self.worker.reset_tracking_data() 
         self.history_list.append("<b style='color:cyan;'>[SYSTEM] REBOOT SUCCESSFUL: MEMORY PURGED</b>")
+        
+        # Reset UI states to safe defaults
+        self.release_btn.setText("LOCK-IN")
+        self.fire_btn.setEnabled(False)
+        self.fire_btn.setStyleSheet("background-color: #333; color: #777;")
     
     def handle_lock_toggle(self):
-        """ Switch between Overwatch and Active Tracking """
-        is_locked = self.worker.toggle_lock() # Worker logic
+        # SAFETY CHECK: Cannot release lock while weapon is firing
+        if getattr(self.worker, 'is_firing', False):
+            self.history_list.append("<b style='color:red;'>[ERROR] CANNOT DROP LOCK WHILE FIRING!</b>")
+            return
+
+        is_locked = self.worker.toggle_lock() 
         
         if is_locked:
             self.release_btn.setText("RELEASE")
             self.history_list.append("<b style='color:orange;'>TURRET: LOCK-IN ACQUIRED</b>")
+            # Enable firing now that we have a lock
+            self.fire_btn.setEnabled(True)
+            self.fire_btn.setStyleSheet("") # Reset to default OS style
         else:
             self.release_btn.setText("LOCK-IN")
             self.history_list.append("<i style='color:gray;'>TURRET: OVERWATCH MODE</i>")
+            # Disable firing since lock is dropped
+            self.fire_btn.setEnabled(False)
+            self.fire_btn.setStyleSheet("background-color: #333; color: #777;")
 
     def handle_next_target(self):
-        """ Switch the current 'Enemy' to the next person in view """
-        new_id = self.worker.switch_target(step=1) # Worker logic
-
+        new_id = self.worker.switch_target(step=1) 
         if new_id is not None:
             self.history_list.append(f"Target Switched: Now tracking ID {new_id}")
         else:
             self.history_list.append("<i style='color:gray;'>[WARN] No targets available to cycle</i>")
 
     def handle_prev_target(self):
-        """ Switch the current 'Enemy' to the previous person in view """
-        new_id = self.worker.switch_target(step=-1) # Worker logic
-
+        new_id = self.worker.switch_target(step=-1) 
         if new_id is not None:
             self.history_list.append(f"Target Switched: Now tracking ID {new_id}")
         else:
             self.history_list.append("<i style='color:gray;'>[WARN] No targets available to cycle</i>")
 
     def handle_fire(self):
-        """ Simulate engagement """
-        is_fire = self.worker.trigger_fire() # Worker logic
+        is_fire = self.worker.trigger_fire() 
 
         if is_fire:
-            self.history_list.append("<b style='color:red;'>[ACTION ACCEPTED] WEAPON SYSTEM: FIRE</b>")
+            self.history_list.append("<b style='color:red;'>[ACTION ACCEPTED] WEAPON SYSTEM: FIRING</b>")
+            self.fire_btn.setText("CEASE FIRE")
+            self.fire_btn.setStyleSheet("background-color: darkred; color: white; font-weight: bold;")
+            # Disable lock release to force user to cease fire first
+            self.release_btn.setEnabled(False)
         else:
-            self.history_list.append("<b style='color:red;'>[ACTION REJECTED] WEAPON SYSTEMS OFFLINE </b>")
+            self.history_list.append("<b style='color:green;'>[ACTION ACCEPTED] WEAPONS SAFE</b>")
+            self.fire_btn.setText("FIRE")
+            self.fire_btn.setStyleSheet("") 
+            # Safe to drop lock again
+            self.release_btn.setEnabled(True)
     
     ###################################################################################
     #                                 UI UPDATES
@@ -199,60 +234,89 @@ class SentryHUD(QMainWindow):
     
     def update_displays(self, main_frame, image_package, data_package):
         """
-        The main function, changes the screen depending on the incoming data
-        main_frame : CameraStream frame with cv2 drawings
-        image_package : two np.arrays representing the crop and alignment
-        data_package: a dictionary and a float, representing events and fps
+        The main function, changes the screen depending on the incoming data.
+        Wrapped in a try/except to prevent OpenCV/Array errors from crashing the PyQt window.
         """ 
-
-        # 0. Extract data
-        detection_crop, retina_align = image_package[0], image_package[1]
-        logs, fps_val = data_package[0], data_package[1]
-
-        # 1. Update the Live Main Feed
-        cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
-        self.video_label.setPixmap(opencv_to_qpixmap(main_frame, self.video_label.width(), self.video_label.height())) 
-
-        # 2. Event Parsing
-        for event in logs:
-            # 1. Print the header (e.g., [IDENTITY] ID 5: Kerem)
-            self.history_list.append(event.get("html", ""))
+        try:
+            # 0. Extract data
+            detection_crop, retina_align = image_package[0], image_package[1]
+            logs = data_package[0]
+            fps_val = data_package[1]
             
-            # 2. If recognition, sort and print the scores
-            if event["type"] == "RECOGNITION":
-                dists = event["metadata"].get("distances", {})
+            # Unpack
+            system_state = data_package[2] if len(data_package) > 2 else {"has_lock": False, "is_firing": False}
+
+            # If backend ceased fire autonomously (target lost), reset the fire button
+            if not system_state["is_firing"] and self.fire_btn.text() == "CEASE FIRE":
+                self.history_list.append("<i style='color:gray;'>[SYSTEM] Auto-Cease Fire (Target Lost)</i>")
+                self.fire_btn.setText("FIRE")
+                self.fire_btn.setStyleSheet("") 
+                self.release_btn.setEnabled(True)
+
+            # If backend dropped lock autonomously, reset the lock button
+            if not system_state["has_lock"] and self.release_btn.text() == "RELEASE":
+                self.release_btn.setText("LOCK-IN")
+                self.fire_btn.setEnabled(False)
+                self.fire_btn.setStyleSheet("background-color: #333; color: #777;")
+
+            # 1. Update the Live Main Feed
+            cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
+            
+            # Convert raw frame to QPixmap without forcing dimensions yet
+            raw_pixmap = opencv_to_qpixmap(main_frame) 
+            if raw_pixmap:
+                scaled_pixmap = raw_pixmap.scaled(
+                    self.video_label.width(), 
+                    self.video_label.height(), 
+                    Qt.AspectRatioMode.KeepAspectRatio, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                self.video_label.setPixmap(scaled_pixmap)
+
+            # 2. Event Parsing
+            for event in logs:
+                # Print the header (e.g., [IDENTITY] ID 5: Kerem)
+                self.history_list.append(event.get("html", ""))
                 
-                if dists:
-                    sorted_candidates = sorted(dists.items(), key=lambda x: x[1])
-                    self.history_list.append("<font color='#55FF55'>&nbsp;&nbsp;Ranked Candidates:</font>")
-                    
-                    for i, (fname, d) in enumerate(sorted_candidates[:20]): # Top 20
-                        color = "#FFFFFF" if i == 0 else "#888888"
-                        self.history_list.append(
-                            f"<font color='{color}' size='2'>&nbsp;&nbsp;&nbsp;&nbsp;{i+1}. {fname}: {d:.4f}</font>"
-                        )
-
-        # 3. If new detection, update the top left images
-        if detection_crop.size > 0 and retina_align.size > 0:
-
-            # A. Update Detection Box
-            self.detect_cap.setPixmap(opencv_to_qpixmap(detection_crop, 112, 112))
-
-            # B. Update Alignment Box
-            self.align_cap.setPixmap(opencv_to_qpixmap(retina_align, 112, 112))
-
-            # C. Update Comparison Box (the closes embedding model decided on)
-            ref_path = None
-            for event in reversed(logs):
+                # If recognition, sort and print the scores
                 if event["type"] == "RECOGNITION":
-                    ref_path = event["metadata"].get("ref_path")
-                    break
-            
-            if ref_path and isinstance(ref_path, str):
-                ref_cv = cv2.imread(ref_path)
-                if ref_cv is not None:
-                    self.compare_cap.setPixmap(opencv_to_qpixmap(ref_cv, 112, 112))
-            else:
-                # Optional: Clear the box or set a placeholder if no recognition this frame
-                # self.compare_cap.setText("WAITING...") 
-                pass
+                    dists = event["metadata"].get("distances", {})
+                    
+                    if dists:
+                        sorted_candidates = sorted(dists.items(), key=lambda x: x[1])
+                        self.history_list.append("<font color='#55FF55'>&nbsp;&nbsp;Ranked Candidates:</font>")
+                        
+                        for i, (fname, d) in enumerate(sorted_candidates[:20]): # Top 20
+                            color = "#FFFFFF" if i == 0 else "#888888"
+                            self.history_list.append(
+                                f"<font color='{color}' size='2'>&nbsp;&nbsp;&nbsp;&nbsp;{i+1}. {fname}: {d:.4f}</font>"
+                            )
+
+            # 3. Side Previews
+            if detection_crop.size > 0 and retina_align.size > 0:
+
+                # A. Update Detection Box
+                self.detect_cap.setPixmap(opencv_to_qpixmap(detection_crop, 112, 112))
+
+                # B. Update Alignment Box
+                self.align_cap.setPixmap(opencv_to_qpixmap(retina_align, 112, 112))
+
+                # C. Update Comparison Box
+                ref_path = None
+                for event in reversed(logs):
+                    if event["type"] == "RECOGNITION":
+                        ref_path = event["metadata"].get("ref_path")
+                        break
+                
+                if ref_path and isinstance(ref_path, str):
+                    # Nested try/except to prevent IO errors from killing the display update
+                    try:
+                        ref_cv = cv2.imread(ref_path)
+                        if ref_cv is not None:
+                            self.compare_cap.setPixmap(opencv_to_qpixmap(ref_cv, 112, 112))
+                    except Exception as img_err:
+                        print(f"Failed to load reference image from disk: {img_err}")
+
+        except Exception as e:
+            # Catch all rendering and logic errors so the GUI remains interactive
+            print(f"UI Display Loop Exception: {e}")

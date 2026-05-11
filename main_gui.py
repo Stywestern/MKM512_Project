@@ -30,7 +30,7 @@ def main():
     log("App initialized", "INFO")
 
     log("Initializing CameraStream... ", "INFO")
-    shared_cam = RotatedCameraStream().start() # cam init
+    shared_cam = CameraStream().start() # cam init
     
     # 1. Create instances
     log("Initializing VisionWorker... ", "INFO")
@@ -45,7 +45,8 @@ def main():
     
     # 3. Start
     log("Starting UI... ", "INFO")
-    ui.showFullScreen()
+    #ui.showFullScreen()
+    ui.showMaximized()
 
     log("Starting Sentry Subsystem...", "INFO")
     worker.start()

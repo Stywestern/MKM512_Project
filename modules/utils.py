@@ -58,20 +58,30 @@ def create_event(event_type: str, **kwargs):
     return event
 
 # Cleanup for interface.py 
-def opencv_to_qpixmap(frame, width, height):
+def opencv_to_qpixmap(frame, width=None, height=None):
     """
     Utility to convert CV2 BGR images to QPixmap.
+    If width and height are provided, safely scales while preserving aspect ratio.
     """
     if frame is None or frame.size == 0:
         return QPixmap()
 
+    # Convert BGR to RGB
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     h, w, ch = rgb.shape
+    bytes_per_line = ch * w
     
-    qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+    # Create the Qt Image (using .copy() prevents memory corruption)
+    qt_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+    pixmap = QPixmap.fromImage(qt_img)
     
-    return QPixmap.fromImage(qt_img).scaled(
-        width, height, 
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation
-    )
+    # If target dimensions are provided, scale it cleanly
+    if width is not None and height is not None:
+        return pixmap.scaled(
+            width, height, 
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+    # Otherwise, return the unscaled raw pixmap
+    return pixmap

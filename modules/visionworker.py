@@ -17,7 +17,7 @@ from modules.utils import log, create_event
 from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
 from modules.tracker import BoTSORTTracker, ByteTrackTracker
 from modules.recognizer import TurretRecognizer
-from modules.controller import RealTurretController, SimTurretController
+from modules.controller import RealTurretController, RealTurretController2, SimTurretController
 from modules.PLC import TurretPLC
 
 ###################################################################################
@@ -37,7 +37,7 @@ class VisionWorker(QThread):
         self.plc = TurretPLC(ip="192.168.0.101", port=23000)
         if self.plc.connect():
             log("HARDWARE: PLC Connected. Physical turret ACTIVE.", "INFO")
-            self.controller = RealTurretController(self.plc)
+            self.controller = RealTurretController2(self.plc)
         else:
             log("HARDWARE: PLC Offline. Running in SIMULATION MODE.", "WARNING")
             self.controller = SimTurretController()
@@ -120,37 +120,39 @@ class VisionWorker(QThread):
                             (smoothed[1] + smoothed[3]) // 2)
         
 
-    def _sync_sensors_to_target(self, target, landmarks, raw_distances):
-        """ Finds the closest raw detection landmarks for a tracked ID. """
-        
-        # 1. FAULT TOLERANCE: If detector failed to find landmarks, abort gracefully
+    def _sync_sensors_to_target(self, target, landmarks):
+        """ 
+        Finds the closest raw detection landmarks for a tracked ID 
+        and calculates true PnP distance.
+        """
         if landmarks is None or len(landmarks) == 0:
             return None, []
 
         scx, scy = target["center"]
         
         try:
-            # Spatial Matching
+            # Spatial Matching: Find the correct landmarks for this bounding box
             lm_idx = np.argmin([
                 np.linalg.norm(np.array([scx, scy]) - np.mean(lm, axis=0)) 
                 for lm in landmarks
             ])
             
-            current_dist = raw_distances[lm_idx] if lm_idx < len(raw_distances) else None
+            target_landmarks = landmarks[lm_idx]
+            
+            # PnP
+            current_dist = self._estimate_distance_pnp(target_landmarks)
 
             # Safe Dictionary Assignment
             if current_dist is not None:
                 if target["id"] not in self.active_targets:
                     self.active_targets[target["id"]] = {}
-                self.active_targets[target["id"]]["distance"] = float(current_dist)
+                self.active_targets[target["id"]]["distance"] = current_dist
 
-            return current_dist, landmarks[lm_idx]
+            return current_dist, target_landmarks
             
         except Exception as e:
-            # If any math or matrix mapping fails, return safe null values
             log(f"Sensor Sync Error: {e} - Skipping frame sync.", "WARNING")
             return None, []
-    
 
     def _should_identify(self, track_id):
         """
@@ -235,25 +237,55 @@ class VisionWorker(QThread):
             cv2.putText(frame, "ENGAGING", (sx1, sy2 + 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             
-    def _finalize_cycle(self, frame, image_package, frame_events, loop_start):
-        current_time = time.time()
-        delta_time = current_time - self.prev_time
-        fps = 1.0 / delta_time if delta_time > 0 else 30.0
-        self.prev_time = current_time
+    def _estimate_distance_pnp(self, landmarks):
+        """
+        Uses Perspective-n-Point (PnP) to calculate true 3D distance in cm.
+        Calibrated for A4Tech PK-910H (1080p, 70-deg FOV) with Nose-Origin.
+        """
+        try:
+            if landmarks is None or len(landmarks) != 5:
+                return None
 
-        system_state = {
-            "has_lock": self.locked_target_id is not None,
-            "is_firing": self.is_firing
-        }
+            # 1. Generic 3D Adult Face Model (in cm). Origin is Nose Tip.
+            model_points = np.array([
+                [-3.4, -3.0,  3.0],  # Left Eye 
+                [ 3.4, -3.0,  3.0],  # Right Eye
+                [ 0.0,  0.0,  0.0],  # Nose Tip (Origin)
+                [-2.6,  4.0,  3.0],  # Left Mouth
+                [ 2.6,  4.0,  3.0]   # Right Mouth
+            ], dtype=np.float32)
 
-        # Append system_state as the 3rd item in the data package
-        data_package = [frame_events, round(fps, 1), system_state]
-        self.update_signal.emit(frame, image_package, data_package)
+            image_points = np.array(landmarks, dtype=np.float32)
 
-        processing_time = time.time() - loop_start
-        target_period = 0.0333 
-        sleep_duration = max(1, int((target_period - processing_time) * 1000))
-        self.msleep(sleep_duration)
+            # 2. A4Tech PK-910H Intrinsics
+            focal_length = config.FOCAL_LENGTH
+            center_x = config.FRAME_WIDTH / 2.0
+            center_y = config.FRAME_HEIGHT / 2.0
+            
+            camera_matrix = np.array([
+                [focal_length, 0.0, center_x],
+                [0.0, focal_length, center_y],
+                [0.0, 0.0, 1.0]
+            ], dtype=np.float32)
+
+            dist_coeffs = np.zeros((4, 1))
+
+            # 3. Solve PnP (SQPNP for 5-point stability)
+            success, rotation_vec, translation_vec = cv2.solvePnP(
+                model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_SQPNP
+            )
+
+            if success:
+                # Deep index [2][0] to prevent the scalar NumPy crash
+                z_distance_cm = float(translation_vec[2][0]) 
+                if 10.0 < z_distance_cm < 1000.0:
+                    return z_distance_cm
+
+            return None
+            
+        except Exception as e:
+            log(f"PnP Math Error: {e}", "WARNING")
+            return None
 
     def _draw_kinematic_debug(self, frame, target, x_diff, y_diff):
         """
@@ -280,6 +312,26 @@ class VisionWorker(QThread):
         debug_text = f"Nx: {x_diff:+.2f} | Ny: {y_diff:+.2f}"
         cv2.putText(frame, debug_text, (cx + 10, cy + 25), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+    def _finalize_cycle(self, frame, image_package, frame_events, loop_start):
+        current_time = time.time()
+        delta_time = current_time - self.prev_time
+        fps = 1.0 / delta_time if delta_time > 0 else 30.0
+        self.prev_time = current_time
+
+        system_state = {
+            "has_lock": self.locked_target_id is not None,
+            "is_firing": self.is_firing
+        }
+
+        # Append system_state as the 3rd item in the data package
+        data_package = [frame_events, round(fps, 1), system_state]
+        self.update_signal.emit(frame, image_package, data_package)
+
+        processing_time = time.time() - loop_start
+        target_period = 0.0333 
+        sleep_duration = max(1, int((target_period - processing_time) * 1000))
+        self.msleep(sleep_duration)
             
 
     ###################################################################################
@@ -340,7 +392,7 @@ class VisionWorker(QThread):
                         # ------------------- PREPROCESSING (START) ---------------
 
                         self._apply_temporal_smoothing(target) # smoothens the box
-                        current_dist, face_landmarks = self._sync_sensors_to_target(target, landmarks, raw_distances) # returns correct landmarks
+                        current_dist, face_landmarks = self._sync_sensors_to_target(target, landmarks) # returns correct landmarks
 
                         track_id = target["id"]
                         sx1, sy1, sx2, sy2 = target["face_bbox"]

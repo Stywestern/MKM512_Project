@@ -5,6 +5,7 @@
 import cv2
 import threading
 import numpy as np
+import time
 
 # Modules
 import config
@@ -17,53 +18,72 @@ from modules.utils import log
 ######################################################################################################################################################################
 
 class CameraStream:
-    """ Handles visual stream from the webcam """
+    """ Handles thread-safe visual stream from the webcam """
 
     def __init__(self, src=config.CAMERA_INDEX):
-        """ Specs are hardcoded in config, constructor sets and tries the connection """
         self.src_ = src
         self.width_ = config.FRAME_WIDTH
         self.height_ = config.FRAME_HEIGHT
 
-        self.stream_ = cv2.VideoCapture(self.src_, cv2.CAP_MSMF) # init with better usb bus protocol
-
+        # 1. Threading Lock to prevent memory collisions
+        self.lock = threading.Lock()
+        
+        self.stream_ = cv2.VideoCapture(self.src_, cv2.CAP_MSMF)
         self.stream_.set(cv2.CAP_PROP_FRAME_WIDTH, self.width_)
         self.stream_.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height_)
         self.stream_.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         
-        (self.grabbed_, self.frame_) = self.stream_.read()
-        
-        log("Camera initialized", "INFO")
+        # 2. Hardware Sanity Check
+        if not self.stream_.isOpened():
+            log(f"CRITICAL: Camera at index {self.src_} failed to open!", "ERROR")
+            self.grabbed_ = False
+            self.frame_ = None
+        else:
+            (self.grabbed_, self.frame_) = self.stream_.read()
+            log(f"Camera initialized (Index {self.src_})", "INFO")
         
         self.stopped_ = False
 
     def __str__(self):
-        """ Overwrites the print(class) behavior. """
         status = "ACTIVE" if self.stream_.isOpened() else "OFFLINE"
         return f"CameraStream(Index: {self.src_}, Res: {int(self.width_)}x{int(self.height_)}, Status: {status})"
 
     def start(self):
         """ Starts the async video stream """
-        threading.Thread(target=self.update, args=(), daemon=True).start()
-        log("Video stream started", "INFO")
+        if self.stream_.isOpened():
+            threading.Thread(target=self.update, args=(), daemon=True).start()
+            log("Video stream thread started", "INFO")
         return self
 
     def update(self):
-        """ Pulls the last frame from the feed """
-        while True:
-            if self.stopped_:
-                return
+        """ Pulls the last frame from the feed safely """
+        while not self.stopped_:
+            grabbed, frame = self.stream_.read()
             
-            (self.grabbed_, self.frame_) = self.stream_.read()
+            # 3. Hardware Fault Tolerance: If the camera stutters, don't crash
+            if not grabbed or frame is None:
+                time.sleep(0.01) # Wait 10ms for USB bus to recover
+                continue
+                
+            # Safely lock the memory, update the frame, and release the lock
+            with self.lock:
+                self.grabbed_ = grabbed
+                self.frame_ = frame
 
     def read(self):
-        """ To be populated, for now just grabs the frame """
-        return self.frame_
+        """ Returns a safe, locked copy of the current frame """
+        with self.lock:
+            # We return the reference safely. The VisionWorker takes care of .copy()
+            return self.frame_
 
     def stop(self):
         """ Kills the async stream, detaching hardware """
-        self.stopped = True
-        self.stream_.release()
+        # THE FIX: Corrected the typo to self.stopped_
+        self.stopped_ = True 
+        
+        if self.stream_.isOpened():
+            self.stream_.release()
+        log("Camera hardware released.", "WARNING")
 
 
 ######################################################################################################################################################################

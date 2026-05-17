@@ -368,3 +368,159 @@ class RealTurretController:
                 'update_laser': update_relay,
                 'laser_state': fire_cmd
             })
+
+######################################################################################################################################################################
+#                                                           REAL CONTROLLER (Hardware) (With Distance)
+######################################################################################################################################################################
+
+class RealTurretController2:
+    """
+    Standalone Hardware-active class. 
+    Handles all PD math, kinematic state, and hardware thread queuing internally.
+    """
+    def __init__(self, plc_ref):
+        self.plc = plc_ref
+        self.is_firing_latched = False
+        
+        # 1. PD Parameters
+        self.kp = 0.07      
+        self.kd = 0.02      
+        self.deadzone_deg = 1.5 
+        
+        # 2. Mathematical Memory
+        self.last_error_x = 0.0
+        self.last_error_y = 0.0
+        self.last_time = time.time()
+        
+        # 3. Unified Kinematic State
+        self.current_pan = 0.0  
+        self.current_tilt = 0.0
+        self.overwatch_dir = "left"
+
+        # 4. Camera Physical Properties
+        self.cam_res_x = config.FRAME_WIDTH
+        self.cam_res_y = config.FRAME_HEIGHT
+        self.fov_pan = 60.0   
+        self.fov_tilt = 40.0  
+
+        self.deg_per_pixel_x = self.fov_pan / self.cam_res_x
+        self.deg_per_pixel_y = self.fov_tilt / self.cam_res_y
+        
+        # 5. PHYSICAL HARDWARE OFFSETS (in cm)
+        # Measure the distance from the center of your camera lens to the center of your laser.
+        # Assuming laser is mounted 5cm BELOW the camera, and perfectly centered horizontally.
+        self.laser_offset_y_cm = 5.0  
+        self.laser_offset_x_cm = 0.0  
+
+        # Start Hardware Thread
+        self.hw_thread = ControllerThread(self.plc)
+        self.hw_thread.start()
+
+        log("Controller: PHYSICAL hardware linked via Background Thread", "INFO")
+
+    def calculate_effort(self, target_deg_x, target_deg_y):
+        # [Unchanged from your current file]
+        current_time = time.time()
+        dt = current_time - self.last_time
+        if dt <= 0.001: dt = 0.033 
+
+        if abs(target_deg_x) < self.deadzone_deg: target_deg_x = 0.0
+        if abs(target_deg_y) < self.deadzone_deg: target_deg_y = 0.0
+
+        d_x = self.kd * (target_deg_x - self.last_error_x) / dt
+        d_y = self.kd * (target_deg_y - self.last_error_y) / dt
+
+        delta_pan = (self.kp * target_deg_x) + d_x
+        delta_tilt = (self.kp * target_deg_y) + d_y
+
+        delta_pan = max(-4.0, min(4.0, delta_pan))
+        delta_tilt = max(-4.0, min(4.0, delta_tilt))
+
+        self.last_error_x = target_deg_x
+        self.last_error_y = target_deg_y
+        self.last_time = current_time
+        
+        return delta_pan, delta_tilt
+
+    def perform_overwatch(self):
+        # [Unchanged from your current file]
+        if not self.plc or not self.plc.connected:
+            return
+            
+        if abs(self.current_tilt) > 0.1:
+            self.current_tilt = 0.0
+            self.hw_thread.issue_command({
+                'type': 'pose',
+                'pan': float(self.current_pan),
+                'tilt': 0.0
+            })
+            return
+        
+        sweep_speed = 2.0
+        sweep_range = 10.0
+
+        if self.overwatch_dir == "left":
+            self.current_pan += sweep_speed
+            if self.current_pan >= sweep_range:
+                self.current_pan = sweep_range
+                self.overwatch_dir = "right"
+        else:
+            self.current_pan -= sweep_speed
+            if self.current_pan <= -sweep_range:
+                self.current_pan = -sweep_range
+                self.overwatch_dir = "left"
+
+        self.hw_thread.issue_command({
+            'type': 'pose', 
+            'pan': float(self.current_pan), 
+            'tilt': float(self.current_tilt)
+        })
+
+    def update_turret(self, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
+        deg_error_x = pixel_err_x * self.deg_per_pixel_x
+        deg_error_y = pixel_err_y * self.deg_per_pixel_y
+
+        delta_pan, delta_tilt = self.calculate_effort(deg_error_x, deg_error_y)
+
+        self.current_pan += delta_pan
+        self.current_tilt += delta_tilt
+
+        self.current_pan = max(-60.0, min(60.0, self.current_pan))
+        self.current_tilt = max(-40.0, min(40.0, self.current_tilt))
+
+        # --- THE FIX: DYNAMIC PARALLAX CORRECTION ---
+        # Prevent math errors if distance drops to zero or goes negative
+        safe_dist = max(dist_cm, 1.0) 
+        
+        # Calculate the micro-angle needed to intersect the camera's center line
+        parallax_tilt = math.degrees(math.atan2(self.laser_offset_y_cm, safe_dist))
+        parallax_pan = math.degrees(math.atan2(self.laser_offset_x_cm, safe_dist))
+        
+        # If the laser is mounted BELOW the camera, we subtract the tilt angle to aim it UP.
+        # If it is mounted to the RIGHT, we subtract the pan angle to aim it LEFT.
+        final_tilt = self.current_tilt - parallax_tilt
+        final_pan = self.current_pan - parallax_pan
+
+        print(f"[HW-TRACKING] Err(px): x={pixel_err_x:+.1f}, y={pixel_err_y:+.1f} | "
+              f"Dist: {dist_cm:.1f}cm | "
+              f"Parallax(deg): {parallax_tilt:.2f} | "
+              f"Step: pan={delta_pan:+.2f}, tilt={delta_tilt:+.2f} | "
+              f"Fire: {fire_cmd}")
+
+        if self.plc and self.plc.connected:
+            update_relay = False
+
+            if fire_cmd and not self.is_firing_latched:
+                update_relay = True
+                self.is_firing_latched = True
+            elif not fire_cmd and self.is_firing_latched:
+                update_relay = True
+                self.is_firing_latched = False
+
+            self.hw_thread.issue_command({
+                'type': 'turret_state', 
+                'pan': float(final_pan), 
+                'tilt': float(final_tilt),
+                'update_laser': update_relay,
+                'laser_state': fire_cmd
+            })

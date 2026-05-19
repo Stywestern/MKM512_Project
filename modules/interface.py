@@ -179,12 +179,15 @@ class SentryHUD(QMainWindow):
         if is_locked:
             self.release_btn.setText("RELEASE")
             self.history_list.append("<b style='color:orange;'>TURRET: LOCK-IN ACQUIRED</b>")
+
             # Enable firing now that we have a lock
             self.fire_btn.setEnabled(True)
             self.fire_btn.setStyleSheet("") # Reset to default OS style
+
         else:
             self.release_btn.setText("LOCK-IN")
             self.history_list.append("<i style='color:gray;'>TURRET: OVERWATCH MODE</i>")
+
             # Disable firing since lock is dropped
             self.fire_btn.setEnabled(False)
             self.fire_btn.setStyleSheet("background-color: #333; color: #777;")
@@ -246,18 +249,19 @@ class SentryHUD(QMainWindow):
             # Unpack
             system_state = data_package[2] if len(data_package) > 2 else {"has_lock": False, "is_firing": False}
 
-            # If backend ceased fire autonomously (target lost), reset the fire button
-            if not system_state["is_firing"] and self.fire_btn.text() == "CEASE FIRE":
-                self.history_list.append("<i style='color:gray;'>[SYSTEM] Auto-Cease Fire (Target Lost)</i>")
-                self.fire_btn.setText("FIRE")
-                self.fire_btn.setStyleSheet("") 
-                self.release_btn.setEnabled(True)
-
-            # If backend dropped lock autonomously, reset the lock button
-            if not system_state["has_lock"] and self.release_btn.text() == "RELEASE":
+            # 1. Lock-In button only resets if the INTENT to lock is revoked by the operator
+            if not system_state.get("is_locking", False) and self.release_btn.text() == "RELEASE":
                 self.release_btn.setText("LOCK-IN")
+                # Only if the whole system disarms do we reset the fire button visually
+                self.fire_btn.setText("FIRE")
                 self.fire_btn.setEnabled(False)
                 self.fire_btn.setStyleSheet("background-color: #333; color: #777;")
+            
+            # 2. Dynamic Trigger Safety
+            if system_state.get("is_locking", False):
+                self.fire_btn.setEnabled(True)
+                if not system_state.get("is_firing", False):
+                    self.fire_btn.setStyleSheet("")
 
             # 1. Update the Live Main Feed
             cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)

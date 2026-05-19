@@ -22,6 +22,22 @@ def main():
         # set_laser(True) maps to 0x0B (SetF)
         # set_laser(False) maps to 0x0C (ResetF)
         success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+        success = plc.set_laser(FIRE_STATUS)
+
 
         plc.send_pose(-30, 0)
 

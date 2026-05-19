@@ -17,7 +17,7 @@ from modules.utils import log, create_event
 from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
 from modules.tracker import BoTSORTTracker, ByteTrackTracker
 from modules.recognizer import TurretRecognizer
-from modules.controller import RealTurretController, KinematicTurretController, SimTurretController
+from modules.controller import RealTurretController, SimTurretController
 from modules.PLC import TurretPLC
 
 ###################################################################################
@@ -37,7 +37,6 @@ class VisionWorker(QThread):
         self.plc = TurretPLC(ip="192.168.0.101", port=23000)
         if self.plc.connect():
             log("HARDWARE: PLC Connected. Physical turret ACTIVE.", "INFO")
-            #self.controller = RealTurretController(self.plc)
             self.controller = RealTurretController(self.plc)
         else:
             log("HARDWARE: PLC Offline. Running in SIMULATION MODE.", "WARNING")
@@ -92,9 +91,8 @@ class VisionWorker(QThread):
             # 3. Drop the lock so the Arbitrator can acquire new targets
             if tid == self.locked_target_id:
                 self.locked_target_id = None
-                #self.is_firing = False
+                self.is_firing = False
                 log(f"TARGET LOST: ID {tid} completely removed. Lock released.", "WARNING")
-
             else:
                 log(f"Memory Cleared: ID {tid} (Stale)", "DEBUG")
 
@@ -177,9 +175,11 @@ class VisionWorker(QThread):
     
     def _arbitrate_target_lock(self, potential_enemies):
         """ Decides which target to lock onto if no lock currently exists. """
+
         if not self.is_locking or self.locked_target_id is not None:
             return None
 
+        
         if not potential_enemies:
             return None
 
@@ -322,8 +322,7 @@ class VisionWorker(QThread):
         self.prev_time = current_time
 
         system_state = {
-            "is_locking": self.is_locking,                     
-            "has_target": self.locked_target_id is not None,   
+            "has_lock": self.locked_target_id is not None,
             "is_firing": self.is_firing
         }
 
@@ -471,7 +470,6 @@ class VisionWorker(QThread):
             # 3. TELEMETRY & EMIT
 
             # A. Check if locking is going on
-
             lock_event = self._arbitrate_target_lock(potential_enemies)
             if lock_event:
                 frame_events.append(lock_event)
@@ -495,12 +493,9 @@ class VisionWorker(QThread):
                     # Update turret with 0.0 error (adds 0 to current pos)
                     self.controller.update_turret(0.0, 0.0, last_dist, False)
             else:
-                # No id, is there lock?
-                if self.plc.connected and self.is_locking == False:
+                # No lock? Overwatch.
+                if self.plc.connected:
                     self.controller.perform_overwatch()
-
-                else:
-                    self.controller.update_turret(0.0, 0.0, 0, self.is_firing)
 
             # C. Send the loop info
             #print(self.locked_target_id)

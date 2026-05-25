@@ -2,7 +2,7 @@
 
 try:
     import onnxruntime as ort
-    # This "pre-warms" the DLL bindings before PyQt6 can interfere
+    # This pre-warms the DLL bindings before PyQt6 can interfere. Otherwise there were a lot bugs I couldn't solve so I at last found this workaround.
     _ = ort.get_device() 
 
 except Exception as e:

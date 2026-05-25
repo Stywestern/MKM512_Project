@@ -57,6 +57,23 @@ class VisionWorker(QThread):
 
         log("VisionWorker initialized", "INFO")
 
+    def shutdown(self):
+        """ Deterministic teardown method. Ensures hardware returns to safe state. """
+        log("SYSTEM SHUTDOWN: Initiating safe teardown...", "WARNING")
+        
+        # 1. Stop the AI loop
+        self.running = False 
+        
+        # 2. Tell the hardware controller thread to die gracefully
+        if hasattr(self, 'controller') and hasattr(self.controller, 'hw_thread'):
+            self.controller.hw_thread.stop()  # Sets hw_thread.running = False
+            
+            self.controller.hw_thread.join(timeout=2.0) 
+            
+        # 3. Stop the camera hardware
+        if hasattr(self, 'cam'):
+            self.cam.stop()
+
     ###################################################################################
     #                                 HELPER METHODS
     ###################################################################################
@@ -215,29 +232,55 @@ class VisionWorker(QThread):
         is_locked_target = (track_id == self.locked_target_id)
         is_firing = (is_locked_target and self.is_firing)
         
-        # Visual thickness increases when firing for 'recoil' effect
         thickness = 4 if is_firing else 2
 
-        # 2. Draw Bounding Box & Identity Header
-        cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, 2)
-        cv2.rectangle(frame, (sx1, sy1 - 22), (sx2, sy1), color, -1)
+        # 2. Format the Display Text
+        first_name = name.replace("_", " ").split(" ")[0]
+        affil_char = affiliation[0] 
+        display_text = f"[{affil_char}] {first_name} #{track_id} | d:{int(distance)}cm"
 
-        # 3. Telemetry String
-        # Format: ENEMY: Kerem (ID:5)(DIST: 150.2cm)
-        display_text = f"{affiliation}: {name} (ID:{track_id})(DIST: {distance:.1f}cm)"
+        # 3. Upgraded Text Sizing
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.65  # Increased from 0.5 for much better readability
+        font_thickness = 2 
         
-        cv2.putText(frame, display_text, (sx1 + 5, sy1 - 7), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        (text_width, text_height), baseline = cv2.getTextSize(display_text, font, font_scale, font_thickness)
 
-        # 4. Engagement Crosshair (Only if firing)
+        # --- THE FIX: FULL SPAN WIDTH ---
+        # The box must be AT LEAST the width of the face, but expand if the text is longer.
+        face_width = sx2 - sx1
+        box_width = max(text_width + 20, face_width) 
+        
+        # 4. Draw Bounding Box
+        cv2.rectangle(frame, (sx1, sy1), (sx2, sy2), color, thickness)
+        
+        # 5. Draw Full-Span Header Background
+        header_y1 = max(0, sy1 - text_height - 15) # Added vertical padding
+        cv2.rectangle(frame, (sx1, header_y1), (sx1 + box_width, sy1), color, -1)
+
+        # --- THE FIX: PERFECT CENTERING ---
+        # Calculate exactly where the text should start to be centered in the box
+        text_x = sx1 + (box_width - text_width) // 2
+        text_y = sy1 - 7 
+
+        # 6. Draw High-Contrast Bold Black Text
+        cv2.putText(frame, display_text, (text_x, text_y), 
+                    font, font_scale, (0, 0, 0), font_thickness, cv2.LINE_AA)
+
+        # 7. Engagement Crosshair & Alert
         if is_firing:
             cx, cy = target["center"]
-            # Red crosshair centered on the smoothed face center
+            
             cv2.line(frame, (cx - 25, cy), (cx + 25, cy), (0, 0, 255), thickness)
             cv2.line(frame, (cx, cy - 25), (cx, cy + 25), (0, 0, 255), thickness)
-            # Optional: Add a 'FIRE' alert next to the box
-            cv2.putText(frame, "ENGAGING", (sx1, sy2 + 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            
+            (e_w, e_h), _ = cv2.getTextSize("ENGAGING", font, 0.7, 2)
+            
+            # Center the "ENGAGING" alert below the box as well
+            alert_x = sx1 + (face_width - e_w) // 2
+            cv2.rectangle(frame, (alert_x - 5, sy2), (alert_x + e_w + 5, sy2 + e_h + 10), (0, 0, 255), -1)
+            cv2.putText(frame, "ENGAGING", (alert_x, sy2 + e_h + 5), 
+                        font, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
             
     def _estimate_distance_pnp(self, landmarks):
         """

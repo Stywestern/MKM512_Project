@@ -24,6 +24,20 @@ class SentryHUD(QMainWindow):
         self.init_ui()
         self.setup_connections() # map UI buttons to logic handlers
 
+    def closeEvent(self, event):
+        """ Catches the window close button (X) to ensure hardware safety """
+        
+        # If the worker exists, trigger the deterministic shutdown
+        if hasattr(self, 'worker'):
+            self.worker.shutdown()
+            
+            # Wait for the QThread to finish cleanly before destroying the window
+            self.worker.quit()
+            self.worker.wait(2000) 
+            
+        # Accept the event to allow the window to finally close
+        event.accept()
+
     ###################################################################################
     #                                 LAYOUT
     ###################################################################################
@@ -183,6 +197,12 @@ class SentryHUD(QMainWindow):
             # Enable firing now that we have a lock
             self.fire_btn.setEnabled(True)
             self.fire_btn.setStyleSheet("") # Reset to default OS style
+            
+            self.restart_btn.setEnabled(False)
+            self.restart_btn.setStyleSheet("background-color: #333; color: #777;")
+
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setStyleSheet("background-color: #333; color: #777;")
 
         else:
             self.release_btn.setText("LOCK-IN")
@@ -191,6 +211,12 @@ class SentryHUD(QMainWindow):
             # Disable firing since lock is dropped
             self.fire_btn.setEnabled(False)
             self.fire_btn.setStyleSheet("background-color: #333; color: #777;")
+            
+            self.restart_btn.setEnabled(True)
+            self.restart_btn.setStyleSheet("")
+
+            self.stop_btn.setEnabled(True)
+            self.stop_btn.setStyleSheet("")
 
     def handle_next_target(self):
         new_id = self.worker.switch_target(step=1) 

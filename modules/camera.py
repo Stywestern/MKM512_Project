@@ -18,7 +18,7 @@ from modules.utils import log
 ######################################################################################################################################################################
 
 class CameraStream:
-    """ Handles thread-safe visual stream from the webcam """
+    """ Handles thread-safe, fault-tolerant visual stream from the webcam """
 
     def __init__(self, src=config.CAMERA_INDEX):
         self.src_ = src
@@ -50,21 +50,57 @@ class CameraStream:
 
     def start(self):
         """ Starts the async video stream """
-        if self.stream_.isOpened():
-            threading.Thread(target=self.update, args=(), daemon=True).start()
-            log("Video stream thread started", "INFO")
+        threading.Thread(target=self.update, args=(), daemon=True).start()
+        log("Video stream thread started", "INFO")
         return self
 
+    def _reconnect_hardware(self):
+        """ The Polling Loop: Tries to re-establish connection to the USB hardware """
+        log("CAMERA WATCHDOG: Entering recovery mode...", "WARNING")
+        
+        while not self.stopped_ and not self.stream_.isOpened():
+            log(f"CAMERA WATCHDOG: Polling hardware node {self.src_}...", "DEBUG")
+            time.sleep(1.0)  # Wait 1 second between pings to avoid locking the OS USB bus
+            
+            self.stream_ = cv2.VideoCapture(self.src_, cv2.CAP_MSMF)
+            
+            if self.stream_.isOpened():
+                # The hardware came back! Re-apply all configurations
+                self.stream_.set(cv2.CAP_PROP_FRAME_WIDTH, self.width_)
+                self.stream_.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height_)
+                self.stream_.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                log("CAMERA WATCHDOG: Hardware recovered successfully!", "SUCCESS")
+                break
+
     def update(self):
-        """ Pulls the last frame from the feed safely """
+        """ Pulls the last frame from the feed safely with Drop Detection """
+        fail_count = 0
+        max_fails = 15  # ~150-300ms of dead air means the cable was unplugged
+
         while not self.stopped_:
+            # If the stream died, enter the recovery loop
+            if not self.stream_.isOpened():
+                self._reconnect_hardware()
+                continue
+
             grabbed, frame = self.stream_.read()
             
-            # 3. Hardware Fault Tolerance: If the camera stutters, don't crash
+            # 3. Hardware Fault Tolerance / Drop Detection
             if not grabbed or frame is None:
-                time.sleep(0.01) # Wait 10ms for USB bus to recover
+                fail_count += 1
+                if fail_count > max_fails:
+                    log("CAMERA WATCHDOG: Connection lost! Releasing dead hardware...", "ERROR")
+                    self.stream_.release()  # Force kill the ghost pointer
+                    
+                    with self.lock:
+                        self.frame_ = None  # Safely blanks out the pipeline
+                
+                time.sleep(0.02)  # Wait 20ms before trying to read again
                 continue
                 
+            # If we grabbed a successful frame, reset the fail counter
+            fail_count = 0
+            
             # Safely lock the memory, update the frame, and release the lock
             with self.lock:
                 self.grabbed_ = grabbed
@@ -78,13 +114,11 @@ class CameraStream:
 
     def stop(self):
         """ Kills the async stream, detaching hardware """
-        # THE FIX: Corrected the typo to self.stopped_
         self.stopped_ = True 
         
         if self.stream_.isOpened():
             self.stream_.release()
         log("Camera hardware released.", "WARNING")
-
 
 ######################################################################################################################################################################
 #                                                                      Rotated Camera

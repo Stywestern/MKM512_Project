@@ -4,6 +4,7 @@
 
 # Standart Libraries
 import sys
+import numpy as np
 
 # Third Party Libraries
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QGridLayout, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QTextEdit)
@@ -289,7 +290,7 @@ class SentryHUD(QMainWindow):
                 if not system_state.get("is_firing", False):
                     self.fire_btn.setStyleSheet("")
 
-            # 1. Update the Live Main Feed
+            # 3. Update the Live Main Feed
             cv2.putText(main_frame, f"FPS: {fps_val}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
             
             # Convert raw frame to QPixmap without forcing dimensions yet
@@ -341,7 +342,11 @@ class SentryHUD(QMainWindow):
                 if ref_path and isinstance(ref_path, str):
                     # Nested try/except to prevent IO errors from killing the display update
                     try:
-                        ref_cv = cv2.imread(ref_path)
+                        ref_cv = cv2.imdecode(
+                            np.fromfile(ref_path, dtype=np.uint8),
+                            cv2.IMREAD_COLOR
+                        )
+                        
                         if ref_cv is not None:
                             self.compare_cap.setPixmap(opencv_to_qpixmap(ref_cv, 112, 112))
                     except Exception as img_err:

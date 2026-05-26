@@ -36,7 +36,11 @@ def update_embeddings():
         for image_name in os.listdir(person_dir):
             if image_name in existing_origins: continue
 
-            img = cv2.imread(os.path.join(person_dir, image_name))
+            img = cv2.imdecode(
+                np.fromfile(os.path.join(person_dir, image_name), dtype=np.uint8),
+                cv2.IMREAD_COLOR
+            )
+            
             if img is None: continue
 
             # --- ATTEMPT 1: Direct Detection ---
@@ -58,7 +62,10 @@ def update_embeddings():
                 # 2. SAVE FOR DEBUGGING
                 # This lets you see exactly what is being sent to the recognizer
                 debug_file_path = os.path.join(person_debug_dir, f"aligned_{image_name}")
-                cv2.imwrite(debug_file_path, aligned_face)
+                ext = os.path.splitext(debug_file_path)[1]
+                success, encoded_img = cv2.imencode(ext, aligned_face)
+                if success:
+                    encoded_img.tofile(debug_file_path)
 
                 # 3. Generate Embedding
                 embedding = rec_model.get_feat(aligned_face)

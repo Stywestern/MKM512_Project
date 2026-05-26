@@ -59,21 +59,31 @@ class TurretPLC:
         return crc
 
     def _pack_and_send(self, func_code, data_payload):
-        if not self.connected: return False, {}
+        if not self.connected:
+            return False, {}
+
         packet = bytearray([func_code]) + data_payload
         crc = self._crc16(packet)
         crc_bytes = crc.to_bytes(2, 'big')
-        packet.append(crc_bytes[1]) # CRC Low
-        packet.append(crc_bytes[0]) # CRC High
+        packet.append(crc_bytes[1])
+        packet.append(crc_bytes[0])
 
         try:
+            # 1. Send the data
             self.socket_client.send(packet)
-            response = self.socket_client.recv(7)
-            return self._parse_response(response)
+            
+            # 2. NON-BLOCKING READ: 
+            self.socket_client.settimeout(0.01) 
+            try:
+                response = self.socket_client.recv(7)
+                return self._parse_response(response)
+            except socket.timeout:
+                return True, {"status": "BUSY"}
+        
         except socket.error as e:
             self.connected = False
-            return False, {}
-
+            return False, {}        
+            
     def send_pose(self, pan, tilt):
         """
         Sends absolute motor positions (0-359 degrees).

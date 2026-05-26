@@ -7,12 +7,13 @@ env/
 # IDE settings
 .vscode/
 
-# Project-specific Data (Don't push these!)
+# Project-specific Data
 assets/faces/raw_images/
 assets/faces/debug_aligned/
 assets/faces/embeddings/*.pkl
+paper_assets/
 
-# Models (Too heavy for GitHub)
+# Models
 assets/models/
 
 # System files

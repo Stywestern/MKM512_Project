@@ -17,7 +17,7 @@ from modules.utils import log, create_event
 from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
 from modules.tracker import BoTSORTTracker, ByteTrackTracker
 from modules.recognizer import TurretRecognizer
-from modules.controller import RealTurretController, KinematicTurretController, SimTurretController
+from modules.controller import RealTurretController, SimTurretController
 from modules.PLC import TurretPLC
 
 ###################################################################################
@@ -399,7 +399,6 @@ class VisionWorker(QThread):
             #self.plc.set_laser(False)
 
             self.plc.set_velocity(tilt_vel=500, pan_vel=50)
-            self.plc.set_acceleration(tilt_acc=500, pan_acc=100)
 
         while self.running:
             loop_start = time.time()
@@ -468,6 +467,7 @@ class VisionWorker(QThread):
                             best_filename = sorted(distances.items(), key=lambda x: x[1])[0][0]
                             person_dir = best_filename.rsplit("_", 1)[0]
                             ref_path = os.path.join("assets", "faces", "debug_aligned", person_dir, f"aligned_{best_filename}")
+                            
                             frame_events.append(create_event("RECOGNITION", track_id=track_id, name=name, distances=distances, ref_path=ref_path))
 
                             log(f"New Recognition: {name}", "DEBUG")
@@ -537,13 +537,15 @@ class VisionWorker(QThread):
                     
                     # Update turret with 0.0 error (adds 0 to current pos)
                     self.controller.update_turret(0.0, 0.0, last_dist, False)
-            else:
-                # No id, is there lock?
-                if self.plc.connected and self.is_locking == False:
-                    self.controller.perform_overwatch()
 
-                else:
-                    self.controller.update_turret(0.0, 0.0, 0, self.is_firing)
+            elif self.is_locking == True and self.locked_target_id is None:
+                # Hold the ground
+                self.controller.update_turret(0.0, 0.0, 0, self.is_firing)
+
+            else:
+                # Return to overwatch
+                self.controller.perform_overwatch()
+
 
             # C. Send the loop info
             #print(self.locked_target_id)

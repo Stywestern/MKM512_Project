@@ -21,6 +21,9 @@ def run_motion_test(pan_deg, tilt_deg):
         # 3. Send Pose (This handles the 7-byte packing and CRC16)
         # Internally: [0x01, Pan_H, Pan_L, Tilt_H, Tilt_L, CRC_L, CRC_H]
         success = plc.send_pose(pan_deg, tilt_deg)
+        success = plc.send_pose(-pan_deg, tilt_deg)
+        success = plc.send_pose(pan_deg, tilt_deg)
+
 
         if success:
             print("SUCCESS: Command received and acknowledged by PLC.")

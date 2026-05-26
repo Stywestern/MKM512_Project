@@ -19,7 +19,8 @@ RETRY_INTERVAL = 5.0           # Seconds to wait before re-identifying an Unknow
 
 # --- DATABASE SETTINGS ---
 ENEMIES = [ 'George_W_Bush', 'Gerhard_Schroeder', 'Gloria_Macapagal_Arroyo', 'Hugo_Chavez', 'Hu_Jintao', 'Jennifer_Lopez', 'Kerem_Cantimur', 'Tony_Blair', 'Venus_Williams']
-FRIENDS = ['Angelina_Jolie', 'Colin_Powell', 'Kofi_Annan', 'Laura_Bush', 'Megawati_Sukarnoputri', 'Roh_Moo-hyun', 'Serena_Williams', 'Tiger_Woods', 'Vicente_Fox', 'Winona_Ryder'] 
+FRIENDS = ['Angelina_Jolie', 'Colin_Powell', 'Kofi_Annan', 'Laura_Bush', 'Megawati_Sukarnoputri', 
+           'Roh_Moo-hyun', 'Serena_Williams', 'Tiger_Woods', 'Vicente_Fox', 'Winona_Ryder', 'Cem_Baltacı'] 
 
 # Tactical Colors (BGR for OpenCV)
 COLOR_STRANGER = (255, 165, 0)  # Orange

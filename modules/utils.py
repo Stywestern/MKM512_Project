@@ -4,6 +4,8 @@
 
 # Standart Libraries
 from datetime import datetime
+import threading
+import inspect
 
 # Third Party Libraries
 import cv2
@@ -16,12 +18,20 @@ from PyQt6.QtGui import QImage, QPixmap
 
 # Custom Logger
 def log(message, level="INFO"):
-    """
-    Better print for the project. Adds timestamps and eye-catcher stuff.
-    Levels: INFO for standart stuff, WARNING for weird occasions, ERROR for unwanted behaviour.
-    """
-    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    print(f"[{timestamp}] [{level}] {message}")
+    # 1. Get the name of the thread currently executing this line
+    thread_name = threading.current_thread().name
+    
+    # 2. Inspect the call stack to find out WHO called this log function
+    # stack()[1] is the caller. stack()[0] is this log function itself.
+    caller_frame = inspect.stack()[1]
+    caller_func = caller_frame.function
+    caller_file = caller_frame.filename.split('/')[-1].split('\\')[-1] # Gets just the filename
+    
+    # 3. Format the timestamp
+    time_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+    # Output example: [14:02:33.105] [INFO] [VisionWorkerThread] <update_turret> (visionworker.py): Calculating PD...
+    print(f"[{time_str}] [{level}] [{thread_name}] <{caller_func}> ({caller_file}): {message}")
 
 
 # Event logger for Visionworker emitions

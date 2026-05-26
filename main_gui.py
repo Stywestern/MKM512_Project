@@ -1,5 +1,8 @@
 #main_gui.py
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 try:
     import onnxruntime as ort
     # This pre-warms the DLL bindings before PyQt6 can interfere. Otherwise there were a lot bugs I couldn't solve so I at last found this workaround.
@@ -38,6 +41,7 @@ def main():
 
     log("Initializing SentryHUD... ", "INFO")
     ui = SentryHUD(worker_ref=worker) # builds but not yet draws
+    ui.setObjectName("UIThread")
     
     # 2. Connect Signals (Worker -> UI)
     log("Initializing worker publisher... ", "INFO")

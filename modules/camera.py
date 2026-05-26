@@ -50,7 +50,7 @@ class CameraStream:
 
     def start(self):
         """ Starts the async video stream """
-        threading.Thread(target=self.update, args=(), daemon=True).start()
+        threading.Thread(target=self.update, args=(), name="CameraThread", daemon=True).start()
         log("Video stream thread started", "INFO")
         return self
 
@@ -73,11 +73,22 @@ class CameraStream:
                 break
 
     def update(self):
-        """ Pulls the last frame from the feed safely with Drop Detection """
+        """ Pulls the last frame from the feed safely with Drop Detection and Heartbeat """
         fail_count = 0
         max_fails = 15  # ~150-300ms of dead air means the cable was unplugged
+        
+        # --- THREAD DIAGNOSTIC: Heartbeat Timer ---
+        last_heartbeat = time.time()
 
         while not self.stopped_:
+            # --- THREAD DIAGNOSTIC: 10-Second Ping ---
+            current_time = time.time()
+            if current_time - last_heartbeat >= 10.0:
+                # Because we updated our log() function earlier, this will automatically 
+                # print [CameraThread] if the thread name was set correctly in start()
+                log("HEARTBEAT: Camera loop is alive, active, and pulling frames.", "DEBUG")
+                last_heartbeat = current_time
+
             # If the stream died, enter the recovery loop
             if not self.stream_.isOpened():
                 self._reconnect_hardware()

@@ -37,6 +37,9 @@ class PoseCtrl(object):
 
         self.MS1Pose = []
         self.MS2Pose = []
+        
+        self.MS1CPose = 0
+        self.MS2CPose = 0
         self.Fire = False
         
         self.ScanMode = False
@@ -97,32 +100,6 @@ class PoseCtrl(object):
              print("PoseCtrl Communication Error [Disconnection]: There is no Connection")
              self.Connected = False
     
-    def takeRoute(self,RoutePath):
-        self.MS1Pose = []
-        self.MS2Pose = []
-        
-        with open(RoutePath, newline='') as f:
-            reader = csv.reader(f)
-            for row in reader:
-                r1 = row[0].split(";")
-                self.MS1Pose.append(int(r1[0]))
-                self.MS2Pose.append(int(r1[1]))
-        self.Step = int(self.MS1Pose[0])
-
-    # def log(self, msg):
-    #     with open(self.errorLogFile_address,'a') as file:
-    #         file.write(str(datetime.now()) + "--" + msg + "\n")
-            
-    def log(self, msg):
-        try:
-            if not self.errorLogFile_address:
-                self.errorLogFile_address = "posectrl_error_log.txt"
-    
-            with open(self.errorLogFile_address, 'a') as file:
-                file.write(str(datetime.now()) + "--" + msg + "\n")
-    
-        except Exception as e:
-            print("Log write error:", e)
                 
     def getVel(self):
         VelMSG = [8,0,0,0,0] #0x08
@@ -140,6 +117,26 @@ class PoseCtrl(object):
             print("PoseCtrl Communication Error[Pose Sending]: %s" % er)
             return "Error","Communication"
         return self.recieve()
+    
+    def ReadEncoder(self):
+        EncMSG = [2,0,0,0,0] #0x08
+        EncMSG_B = bytearray(EncMSG)
+        crc = self.crc16(EncMSG_B,5)
+        crcB = crc.to_bytes(2, 'big') 
+        EncMSG_B.append(crcB[1])
+        EncMSG_B.append(crcB[0])
+        self.sendedData = EncMSG_B
+        print("Enc Vel:" + str(self.sendedData))
+        try:
+            self.socketClient.send(self.sendedData)           
+        except socket.error as er:
+            self.log(str(er))
+            print("PoseCtrl Communication Error[Pose Sending]: %s" % er)
+            return "Error","Communication"
+        return self.recieve()
+    
+        
+    
     
     def getAc(self):
         AcMSG = [9,0,0,0,0] #0x08
@@ -192,7 +189,6 @@ class PoseCtrl(object):
             print("PoseCtrl Communication Error[Pose Sending]: %s" % er)
             return "Error","Communication"
         return self.recieve()
-    
     def setAc(self,Ac:int):
         Ac_b = Ac.to_bytes(2, "big")
         AcMSG = [6,0,0,Ac_b[0],Ac_b[1]] #0x08
@@ -432,7 +428,7 @@ class PoseCtrl(object):
                 #self.recieve()
                 
 
-    def makeSenseMSG(self, data):
+    def makeSenseMSG(self,data):
         crc = self.crc16(data,5)
         crcB = crc.to_bytes(2, 'big')
         if (crcB[1] != data[5]) or (crcB[0] != data[6]):
@@ -450,24 +446,16 @@ class PoseCtrl(object):
         if data[0]==int.from_bytes(b'\x01', "big"):          
             Ms1p = 256*data[1] + data[2]
             Ms2p = 256*data[3] + data[4]
-            # print(str(Ms1p) +"-"+str(Ms2p))
-            # print(str(self.MS2Pose[self.CurrentStep]) +"-"+str(self.MS1Pose[self.CurrentStep]))
-            if self.ScanMode:
-                if (Ms2p == self.MS2Pose[self.CurrentStep]) and (Ms1p == (self.MS1Pose[self.CurrentStep]%360)):
-                    if self.CurrentStep == self.Step-1:                        
-                        return "Done","-"
-                    elif self.CurrentStep < self.Step-1:                        
-                        return "Reached","-"
-                else:                    
-                    print("PoseCtrl Error [Poses dont equal to sended]")
-                    self.log("UndefinedPose")
-                    return "Error","UndefinedPose"
-            else:                
-                print("Route Mode is closed.")
-                return "Reached:"+str(Ms1p) + ":" + str(Ms2p)
+           
+            return "Start Pose:"+str(Ms1p) + ":" + str(Ms2p)
             
         elif data[0] == int.from_bytes(b'\x02', "big"): 
-            pass
+            Ms1p = 256*data[1] + data[2]
+            Ms2p = 256*data[3] + data[4]
+            self.MS1CPose = str(Ms1p)
+            self.MS2CPose = str(Ms2p)
+            
+            return "Current Pose :"+str(Ms1p) + ":" + str(Ms2p)
         
         elif data[0] == int.from_bytes(b'\x03', "big"):
             pass

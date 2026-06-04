@@ -7,6 +7,8 @@ import time
 import threading
 import queue
 import math
+import os
+import csv
 
 # Modules
 from modules.utils import log
@@ -211,8 +213,8 @@ class ControllerThread(threading.Thread):
             try:
                 if self.plc and self.plc.connected:
                     self.plc.set_velocity(tilt_vel=500, pan_vel=500)
-                    self.plc.send_pose(pan=0, tilt=0)
                     self.plc.set_laser(False)
+                    self.plc.send_pose(pan=0, tilt=0)
                     self.plc.disconnect()
             except: pass
 
@@ -231,20 +233,32 @@ class RealTurretController:
     def __init__(self, plc_ref):
         self.plc = plc_ref
         self.is_firing_latched = False
+        self.target_csv_counter = 0
+
+        # Unified PD gains
         self.kp = 0.06
         self.kd = 0.02
+
+        # Deadzone 
         self.deadzone_deg = 0.5
         self.last_error_x = 0.0
         self.last_error_y = 0.0
+
         self.last_time = time.time()
+
         self.current_pan = 0.0
         self.current_tilt = 0.0
+
+        # Pixel-based error 
         self.cam_res_x = config.FRAME_WIDTH
         self.cam_res_y = config.FRAME_HEIGHT
         self.deg_per_pixel_x = 60.0 / self.cam_res_x
         self.deg_per_pixel_y = 40.0 / self.cam_res_y
-        self.laser_offset_y_cm = 4.4
-        self.laser_offset_x_cm = -5.5
+
+        # Parallax constants
+        self.laser_offset_y_cm = 4.4 # camera-laser vertical difference
+        self.laser_offset_x_cm = -5.5 # laser center and lens difference (experimental)
+
         self.hw_thread = ControllerThread(self.plc)
         self.hw_thread.start()
         log("Controller: PHYSICAL hardware linked via Autonomous Background Thread", "INFO")
@@ -255,25 +269,34 @@ class RealTurretController:
     def calculate_effort(self, target_deg_x, target_deg_y):
         current_time = time.time()
         dt = current_time - self.last_time
+        
+        # Deadzone calculation
         if dt <= 0.001: dt = 0.033
         if abs(target_deg_x) < self.deadzone_deg: target_deg_x = 0.0
         if abs(target_deg_y) < self.deadzone_deg: target_deg_y = 0.0
+
+        # Position calculation
         d_x = self.kd * (target_deg_x - self.last_error_x) / dt
         d_y = self.kd * (target_deg_y - self.last_error_y) / dt
         delta_pan = (self.kp * target_deg_x) + d_x
         delta_tilt = (self.kp * target_deg_y) + d_y
-        angle_max = 10
+
+        # Angle clipping
+        angle_max = 15
         delta_pan = max(-angle_max, min(angle_max, delta_pan))
         delta_tilt = max(-angle_max, min(angle_max, delta_tilt))
+
+        # Update error
         self.last_error_x = target_deg_x
         self.last_error_y = target_deg_y
         self.last_time = current_time
+
         return delta_pan, delta_tilt
 
-    def update_turret(self, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
-        """ Calculates tracking math and drops the result into the Mailbox """
-        
-        # 1. THE SEAMLESS HANDOFF
+    def update_turret(self, pan_ref, tilt_ref, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
+
+        """ Calculates tracking math and drops the result into the Mailbox """        
+        # 1. Mode switch
         if self.hw_thread.mode != "TRACKING":
             log("Controller: Executing seamless handoff to TRACKING", "DEBUG")
             self.current_pan = self.hw_thread.sweep_pan
@@ -283,7 +306,7 @@ class RealTurretController:
             self.last_time = time.time()
             self.hw_thread.set_mode("TRACKING")
 
-        # 2. THE STOP GUARD (If no target, do not calculate/move)
+        # 2. Lock-in with no target
         if pixel_err_x == 0 and pixel_err_y == 0:
             # Simply update the mailbox with current position to keep laser/fire state
             self.hw_thread.update_tracking_target(
@@ -294,16 +317,24 @@ class RealTurretController:
             )
             return
 
-        # 3. Parallax & PID (Only reached if there IS an error)
-        safe_dist = max(dist_cm, 1.0)
-        parallax_tilt = math.degrees(math.atan2(self.laser_offset_y_cm, safe_dist))
-        parallax_pan = math.degrees(math.atan2(self.laser_offset_x_cm, safe_dist))
+        ## 3. Parallax & PID (Only reached if there IS an error)
+        # 3A: Distance clipping
+        safe_dist = max(dist_cm, 10.0) # either true distance or 10 cm away
 
-        deg_error_x = (pixel_err_x * self.deg_per_pixel_x) - parallax_pan
+        # 3B: Parallax calculation
+        parallax_tilt = math.degrees(math.atan2(self.laser_offset_y_cm, safe_dist))
+        #parallax_pan = math.degrees(math.atan2(self.laser_offset_x_cm, safe_dist))
+        print("Distance(cm):", dist_cm)
+        #print("Laser tilt(degrees):", parallax_pan)
+
+        # 3C: Error calculation
+        deg_error_x = (pixel_err_x * self.deg_per_pixel_x)
+        deg_error_x = deg_error_x + 3 # laser lens error 3 degrees
+
         deg_error_y = (pixel_err_y * self.deg_per_pixel_y) - parallax_tilt
 
+        # 3D: Calculate next steps pan and tilt
         delta_pan, delta_tilt = self.calculate_effort(deg_error_x, deg_error_y)
-
         self.current_pan = max(-60.0, min(60.0, self.current_pan + delta_pan))
         self.current_tilt = max(-40.0, min(60.0, self.current_tilt + delta_tilt))
 
@@ -320,3 +351,26 @@ class RealTurretController:
             fire_cmd=fire_cmd,
             update_laser=update_relay
         )
+
+        # Telemetry Logging
+        log_dir = "logs"
+        log_file = os.path.join(log_dir, "target_telemetry.csv")
+        
+        # Ensure the logs directory exists in your workspace
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            
+        # Check if file exists to determine if we need to write headers
+        file_is_empty = not os.path.exists(log_file) or os.path.getsize(log_file) == 0
+        
+        # Append the coordinate data safely
+        with open(log_file, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            target_id = self.target_csv_counter
+            self.target_csv_counter += 1
+            
+            # Write headers only on the very first creation
+            if file_is_empty:
+                writer.writerow(["id", "pan_ref", "tilt_ref", "camera_x", "camera_y", "pan_pixel_error", "tilt_pixel_error", "pan_deg_error", "tilt_deg_error"])
+                
+            writer.writerow([target_id, pan_ref, tilt_ref, 960, 540, pixel_err_x, -pixel_err_y, deg_error_x, deg_error_y])

@@ -5,6 +5,7 @@
 import cv2
 import time
 import os
+import csv
 
 # Third Party Libraries
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -499,7 +500,7 @@ class VisionWorker(QThread):
                         # -------------- VISUALIZATION (START) ----------------------- 
                         self._draw_target_hud(display_frame, target, name, affiliation, color, current_dist or 200.0)
 
-                        pan_err, tilt_err = self._calculate_targeting_vector(target)
+                        pan_ref, tilt_ref, pan_err, tilt_err = self._calculate_targeting_vector(target)
 
                         self._draw_kinematic_debug(display_frame, target, pan_err, tilt_err)
 
@@ -509,12 +510,10 @@ class VisionWorker(QThread):
             except Exception as e:
                     # If literally anything blows up, print the exact error, but keep the loop alive
                     log(f"FATAL PIPELINE CRASH: {e} - Skipping corrupted frame.", "ERROR")
-                    self.controller.update_turret(0.0, 0.0, 200.0, False)
+                    self.controller.update_turret(0.0, 0.0, 0.0, 0.0, 200.0, False)
         
-            # 3. TELEMETRY & EMIT
-
+            ## 3. TELEMETRY & EMIT
             # A. Check if locking is going on
-
             lock_event = self._arbitrate_target_lock(potential_enemies)
             if lock_event:
                 frame_events.append(lock_event)
@@ -526,21 +525,21 @@ class VisionWorker(QThread):
                 
                 if locked_target_obj:
                     # Target is visible
-                    pan_err, tilt_err = self._calculate_targeting_vector(locked_target_obj)
+                    pan_ref, tilt_ref, pan_err, tilt_err = self._calculate_targeting_vector(locked_target_obj)
                     target_data = self.active_targets.get(self.locked_target_id, {})
                     dist = target_data.get("distance", 200.0)
 
-                    self.controller.update_turret(pan_err, tilt_err, dist, self.is_firing)
+                    self.controller.update_turret(pan_ref, tilt_ref, pan_err, tilt_err, dist, self.is_firing)
                 else:
                     # Fetch last known distance so the UI doesn't glitch to 0.0
                     last_dist = self.active_targets.get(self.locked_target_id, {}).get("distance", 200.0)
                     
                     # Update turret with 0.0 error (adds 0 to current pos)
-                    self.controller.update_turret(0.0, 0.0, last_dist, False)
+                    self.controller.update_turret(0.0, 0.0, 0.0, 0.0, last_dist, False)
 
             elif self.is_locking == True and self.locked_target_id is None:
                 # Hold the ground
-                self.controller.update_turret(0.0, 0.0, 0, self.is_firing)
+                self.controller.update_turret(0.0, 0.0, 0.0, 0.0, 0, self.is_firing)
 
             else:
                 # Return to overwatch
@@ -674,11 +673,8 @@ class VisionWorker(QThread):
         dx = center_x - cx
         dy = cy - center_y 
 
-        return dx, dy
-
-    def transmit_to_controller(self, pan_error, tilt_error, dist_cm, fire_command):
-        """
-        Passes targeting data to the controller. 
-        If PLC is offline, this call safely does nothing or logs simulation data.
-        """
-        self.controller.update_turret(pan_error, tilt_error, dist_cm, fire_command)
+        return cx, cy, dx, dy
+"""
+    def transmit_to_controller(self, pan_ref, tilt_ref, pan_error, tilt_error, dist_cm, fire_command):
+        self.controller.update_turret(pan_ref, tilt_ref, pan_error, tilt_error, dist_cm, fire_command)
+"""

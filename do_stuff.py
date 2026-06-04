@@ -1,56 +1,38 @@
-import cv2
-import numpy as np
-from modules.detector import SCRFDDetector
-from modules.camera import CameraStream
+import os
+import fitz  # PyMuPDF
 
-def run_calibration():
-    detector = SCRFDDetector(threshold=0.5)
-    cam = CameraStream(0)
+def convert_pdf_to_transparent_png(pdf_filename, output_filename="output.png"):
+    # Get the directory where this script is located
+    current_dir = os.path.dirname(os.path.abspath(__file__))
     
-    print("--- SENTRY CALIBRATION MODE ---")
-    print("1. Stand exactly 200cm away from the lens.")
-    print("2. Watch the terminal for 'Current Pixel IPD'.")
-    print("3. Press ESC to stop and calculate the Focal Length.")
-
-    pixel_distances = []
-
-    while True:
-        frame = cam.read()
-        if frame is None: break
-
-        # Detect
-        _, landmarks, _ = detector.detect(frame)
-
-        if len(landmarks) > 0:
-            face_lms = landmarks[0]
-            dist = np.linalg.norm(face_lms[0] - face_lms[1])
-            pixel_distances.append(dist)
-            
-            # This will let you see the value even if the window is acting up
-            print(f"Current Pixel IPD: {dist:.2f} | Samples: {len(pixel_distances)}", end='\r')
-
-            # Visual Feedback
-            cv2.line(frame, tuple(face_lms[0].astype(int)), tuple(face_lms[1].astype(int)), (0, 255, 0), 2)
-            cv2.putText(frame, f"Pixels: {dist:.2f}", (50, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-        cv2.imshow("Calibration", frame)
-        
-        # Check for ESC (27) or 'q' (113)
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27 or key == ord('q'):
-            break
-
-    if pixel_distances:
-        # Use a mean of the samples for higher precision
-        avg_pixels = sum(pixel_distances) / len(pixel_distances)
-        focal_length = (150 * avg_pixels) / 6.3
-        
-        print(f"\n\nFinal Average Pixels: {avg_pixels:.2f}")
-        print(f"SET YOUR FOCAL_LENGTH TO: {focal_length:.2f}")
+    # Construct full paths for the same directory operation
+    pdf_path = os.path.join(current_dir, pdf_filename)
+    output_path = os.path.join(current_dir, output_filename)
     
-    cam.release()
-    cv2.destroyAllWindows()
+    # Verify the input PDF exists in this directory
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"Could not find '{pdf_filename}' in {current_dir}")
+    
+    # Open the PDF document
+    doc = fitz.open(pdf_path)
+    page = doc[0]  # Standalone documents are single-page (index 0)
+    
+    # Target ~300 DPI for presentation sharpness (300 / 72 = 4.1666...)
+    zoom_factor = 300 / 72
+    matrix = fitz.Matrix(zoom_factor, zoom_factor)
+    
+    # Render the page to a pixel map with an alpha channel for transparency
+    pix = page.get_pixmap(matrix=matrix, alpha=True)
+    
+    # Save the file to disk
+    pix.save(output_path)
+    print(f"Success! High-resolution transparent image saved to: {output_path}")
 
 if __name__ == "__main__":
-    run_calibration()
+    # Change this to match your actual compiled LaTeX PDF filename
+    target_pdf = r"C:\Users\hp\Downloads\equationmaker (5).pdf"
+    
+    try:
+        convert_pdf_to_transparent_png(target_pdf, "latex_presentation_asset.png")
+    except Exception as e:
+        print(f"Error: {e}")

@@ -1,4 +1,4 @@
-from modules.PLC import TurretPLC
+from src.modules.PLC import TurretPLC
 
 # Hardware Configuration
 PLC_IP = "192.168.0.101" 

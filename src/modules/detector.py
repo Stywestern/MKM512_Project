@@ -12,8 +12,8 @@ import numpy as np
 from abc import ABC, abstractmethod
 
 # Modules
-import config
-from modules.utils import log
+import src.config as config
+from src.modules.utils import log
 
 ###################################################################################
 

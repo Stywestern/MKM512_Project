@@ -11,13 +11,13 @@ import os
 import csv
 
 # Modules
-from modules.utils import log
-import config
+from src.modules.utils import log
+import src.config as config
 
 ###################################################################################
 
 ######################################################################################################################################################################
-#                                                            SIM CONTROLLER (Digital Twin)
+#                                                                       SIM CONTROLLER (Digital Twin)
 ######################################################################################################################################################################
 
 class SimTurretController:
@@ -26,14 +26,17 @@ class SimTurretController:
     Calculates physical offsets and simulates motor accumulation in the console.
     """
     def __init__(self):
-        # 1. PD Parameters
-        self.kp = 1.0  
-        self.kd = 0.05  
+        self.target_csv_counter = 0
+        self.is_firing_latched = False
+
+        # 1. Unified PD Parameters 
+        self.kp = 0.06  
+        self.kd = 0.02  
         self.deadzone_deg = 0.5 
         
         # 2. Mathematical Memory
-        self.last_error_x = 0
-        self.last_error_y = 0
+        self.last_error_x = 0.0
+        self.last_error_y = 0.0
         self.last_time = time.time()
 
         # 3. Virtual Kinematic State
@@ -50,23 +53,41 @@ class SimTurretController:
         self.deg_per_pixel_x = self.fov_pan / self.cam_res_x
         self.deg_per_pixel_y = self.fov_tilt / self.cam_res_y
 
-    def calculate_effort(self, target_deg_x, target_deg_y):
-        """ Standard PD logic operating in degrees. """
-        d_x = self.kd * (target_deg_x - self.last_error_x) 
-        d_y = self.kd * (target_deg_y - self.last_error_y) 
+        # 5. Parallax constants
+        self.laser_offset_y_cm = 4.4 
+        self.laser_offset_x_cm = -5.5 
 
+    def calculate_effort(self, target_deg_x, target_deg_y):
+        current_time = time.time()
+        dt = current_time - self.last_time
+        
+        # Deadzone calculation
+        if dt <= 0.001: dt = 0.033
+        if abs(target_deg_x) < self.deadzone_deg: target_deg_x = 0.0
+        if abs(target_deg_y) < self.deadzone_deg: target_deg_y = 0.0
+
+        # Position calculation
+        d_x = self.kd * (target_deg_x - self.last_error_x) / dt
+        d_y = self.kd * (target_deg_y - self.last_error_y) / dt
         delta_pan = (self.kp * target_deg_x) + d_x
         delta_tilt = (self.kp * target_deg_y) + d_y
 
+        # Angle clipping
+        angle_max = 15
+        delta_pan = max(-angle_max, min(angle_max, delta_pan))
+        delta_tilt = max(-angle_max, min(angle_max, delta_tilt))
+
+        # Update error
         self.last_error_x = target_deg_x
         self.last_error_y = target_deg_y
-        
+        self.last_time = current_time
+
         return delta_pan, delta_tilt
 
     def perform_overwatch(self):
         """ Simulates the sweeping motion. """
-        sweep_speed = 2.0
-        sweep_range = 10.0
+        sweep_speed = 4.0
+        sweep_range = 20.0
 
         if self.overwatch_dir == "left":
             self.current_pan += sweep_speed
@@ -79,40 +100,43 @@ class SimTurretController:
                 self.current_pan = -sweep_range
                 self.overwatch_dir = "left"
 
-        # Just print the virtual state, no network calls
         print(f"[SIM-OVERWATCH] Sweeping... Pan: {self.current_pan:+.2f}")
 
-    def update_turret(self, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
-        """ Models the physics of the turret and prints the telemetry. """
-        # 1. Absolute Scaling
-        deg_error_x = pixel_err_x * self.deg_per_pixel_x
-        deg_error_y = pixel_err_y * self.deg_per_pixel_y
+    def update_turret(self, pan_ref, tilt_ref, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
+        """ Models the physics of the turret and logs the telemetry. """
+        
+        # 1. Lock-in with no target
+        if pixel_err_x == 0 and pixel_err_y == 0:
+            print(f"[SIM-TRACKING] Locked, no target. Pos: {self.current_pan:+.2f}, {self.current_tilt:+.2f}")
+            if fire_cmd != self.is_firing_latched:
+                self.is_firing_latched = fire_cmd
+            return
 
-        # 2. Get the delta step
+        # 2. Distance clipping
+        safe_dist = max(dist_cm, 10.0) 
+
+        # 3. Parallax calculation
+        parallax_tilt = math.degrees(math.atan2(self.laser_offset_y_cm, safe_dist))
+
+        # 4. Error calculation
+        deg_error_x = (pixel_err_x * self.deg_per_pixel_x)
+        deg_error_x = deg_error_x + 3 # laser lens error 3 degrees
+
+        deg_error_y = (pixel_err_y * self.deg_per_pixel_y) - parallax_tilt
+
+        # 5. Calculate next steps pan and tilt
         delta_pan, delta_tilt = self.calculate_effort(deg_error_x, deg_error_y)
+        self.current_pan = max(-60.0, min(60.0, self.current_pan + delta_pan))
+        self.current_tilt = max(-40.0, min(60.0, self.current_tilt + delta_tilt))
 
-        # 3. Deadzone filter
-        delta_pan = 0 if abs(delta_pan) < self.deadzone_deg else delta_pan
-        delta_tilt = 0 if abs(delta_tilt) < self.deadzone_deg else delta_tilt
+        if fire_cmd != self.is_firing_latched:
+            self.is_firing_latched = fire_cmd
 
-        # 4. Accumulate Virtual State
-        self.current_pan += delta_pan
-        self.current_tilt += delta_tilt
-
-        # 5. Virtual Hardware Clamps
-        self.current_pan = max(-60.0, min(60.0, self.current_pan))
-        self.current_tilt = max(-40.0, min(40.0, self.current_tilt))
-
-        # 6. Parallax Correction
-        parallax_angle = 1.0 
-        final_tilt = self.current_tilt - parallax_angle
-
-        # 7. Print Console Telemetry
-        """print(f"[SIM-TRACKING] Err(px): x={pixel_err_x:+.1f}, y={pixel_err_y:+.1f} | "
+        # 6. Print Console Telemetry
+        print(f"[SIM-TRACKING] Dist={dist_cm:.1f}cm | "
               f"Err(deg): x={deg_error_x:+.2f}, y={deg_error_y:+.2f} | "
-              f"Step: pan={delta_pan:+.2f}, tilt={delta_tilt:+.2f} | "
               f"Virtual Pos: pan={self.current_pan:+.2f}, tilt={self.current_tilt:+.2f} | " 
-              f"Fire: {fire_cmd}")"""
+              f"Fire: {fire_cmd}")
 
 
 ######################################################################################################################################################################
@@ -353,7 +377,7 @@ class RealTurretController:
         )
 
         # Telemetry Logging
-        log_dir = "logs"
+        """log_dir = "logs"
         log_file = os.path.join(log_dir, "target_telemetry.csv")
         
         # Ensure the logs directory exists in your workspace
@@ -373,4 +397,4 @@ class RealTurretController:
             if file_is_empty:
                 writer.writerow(["id", "pan_ref", "tilt_ref", "camera_x", "camera_y", "pan_pixel_error", "tilt_pixel_error", "pan_deg_error", "tilt_deg_error"])
                 
-            writer.writerow([target_id, pan_ref, tilt_ref, 960, 540, pixel_err_x, -pixel_err_y, deg_error_x, deg_error_y])
+            writer.writerow([target_id, pan_ref, tilt_ref, 960, 540, pixel_err_x, -pixel_err_y, deg_error_x, deg_error_y])"""

@@ -1,5 +1,5 @@
 import time
-from modules.PLC import TurretPLC
+from src.modules.PLC import TurretPLC
 
 def sniff_plc_packets():
     # Using your current PLC IP

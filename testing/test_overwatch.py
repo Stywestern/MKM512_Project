@@ -1,7 +1,7 @@
 import time
 import numpy as np
-from modules.PLC import TurretPLC
-from modules.utils import log
+from src.modules.PLC import TurretPLC
+from src.modules.utils import log
 
 def run_manual_overwatch():
     # 1. Initialize and Connect

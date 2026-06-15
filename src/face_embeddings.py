@@ -2,7 +2,7 @@
 import os, pickle, cv2, numpy as np
 from insightface.model_zoo import get_model
 from insightface.utils import face_align
-from modules.utils import log
+from src.modules.utils import log
 
 # --- CONFIG ---
 RAW_IMAGES_PATH = "assets/faces/raw_images"

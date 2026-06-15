@@ -11,8 +11,8 @@ from boxmot import BotSort, ByteTrack
 import torch
 
 # Modules
-import config
-from modules.utils import log
+import src.config as config
+from src.modules.utils import log
 
 ###################################################################################
 

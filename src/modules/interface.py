@@ -13,7 +13,7 @@ from PyQt6.QtGui import QImage, QPixmap
 import cv2
 
 # Modules
-from modules.utils import log, opencv_to_qpixmap
+from src.modules.utils import log, opencv_to_qpixmap
 
 ###################################################################################
 

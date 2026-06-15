@@ -1,8 +1,9 @@
-#main_gui.py
+# src/main_gui.py
+
+##################################### Imports #####################################
 
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
-
 try:
     import onnxruntime as ort
     # This pre-warms the DLL bindings before PyQt6 can interfere. Otherwise there were a lot bugs I couldn't solve so I at last found this workaround.
@@ -11,8 +12,6 @@ try:
 except Exception as e:
     print(f"Pre-import warning: {e}")
 
-##################################### Imports #####################################
-
 # Standart Libraries
 import sys
 
@@ -20,10 +19,10 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 # Modules
-from modules.camera import CameraStream, RotatedCameraStream
-from modules.interface import SentryHUD
-from modules.visionworker import VisionWorker
-from modules.utils import log
+from src.modules.camera import CameraStream, RotatedCameraStream
+from src.modules.interface import SentryHUD
+from src.modules.visionworker import VisionWorker
+from src.modules.utils import log
 
 ###################################################################################
 

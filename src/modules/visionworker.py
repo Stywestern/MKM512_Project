@@ -13,13 +13,13 @@ import numpy as np
 from collections import deque
 
 # Modules
-import config
-from modules.utils import log, create_event
-from modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
-from modules.tracker import BoTSORTTracker, ByteTrackTracker
-from modules.recognizer import TurretRecognizer
-from modules.controller import RealTurretController, SimTurretController
-from modules.PLC import TurretPLC
+import src.config as config
+from src.modules.utils import log, create_event
+from src.modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
+from src.modules.tracker import BoTSORTTracker, ByteTrackTracker
+from src.modules.recognizer import TurretRecognizer
+from src.modules.controller import RealTurretController, SimTurretController
+from src.modules.PLC import TurretPLC
 
 ###################################################################################
 

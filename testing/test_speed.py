@@ -1,6 +1,6 @@
 import time
-from modules.PLC import TurretPLC
-from modules.utils import log
+from src.modules.PLC import TurretPLC
+from src.modules.utils import log
 
 def run_calibration_pass(plc, vel_value, distance=30):
     print(f"\n>>> CALIBRATING VELOCITY VALUE: {vel_value}")

@@ -2,11 +2,9 @@ import cv2
 import numpy as np
 import time
 
-# Adjust these imports based on your exact folder structure!
-# Assuming this script is in the root directory alongside your 'modules' folder.
-from modules.detector import SCRFDDetector 
-from modules.camera import CameraStream
-import config
+from src.modules.detector import SCRFDDetector 
+from src.modules.camera import CameraStream
+import src.config as config
 
 def estimate_distance_pnp(landmarks, frame_width, frame_height):
     """

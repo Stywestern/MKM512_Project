@@ -1,7 +1,7 @@
 import socket
 import time
 from datetime import datetime
-from modules.utils import log
+from src.modules.utils import log
 
 class TurretPLC:
     def __init__(self, ip="192.168.0.101", port=23000):

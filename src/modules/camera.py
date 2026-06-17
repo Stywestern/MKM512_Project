@@ -1,11 +1,13 @@
-# modules/camera.py
+# src/modules/camera.py
 
 ##################################### Imports #####################################
-# Libraries
-import cv2
+# Standart Libraries
 import threading
 import numpy as np
 import time
+
+# Third Party Libraries
+import cv2
 
 # Modules
 import src.config as config
@@ -25,7 +27,7 @@ class CameraStream:
         self.width_ = config.FRAME_WIDTH
         self.height_ = config.FRAME_HEIGHT
 
-        # 1. Threading Lock to prevent memory collisions
+        # Threading Lock to prevent memory collisions
         self.lock = threading.Lock()
         
         self.stream_ = cv2.VideoCapture(self.src_, cv2.CAP_MSMF)
@@ -33,9 +35,9 @@ class CameraStream:
         self.stream_.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height_)
         self.stream_.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         
-        # 2. Hardware Sanity Check
+        # Hardware Sanity Check
         if not self.stream_.isOpened():
-            log(f"CRITICAL: Camera at index {self.src_} failed to open!", "ERROR")
+            log(f"CRITICAL: Camera at index {self.src_} failed to open", "ERROR")
             self.grabbed_ = False
             self.frame_ = None
         else:
@@ -65,7 +67,7 @@ class CameraStream:
             self.stream_ = cv2.VideoCapture(self.src_, cv2.CAP_MSMF)
             
             if self.stream_.isOpened():
-                # The hardware came back! Re-apply all configurations
+                # The hardware came back, re-apply all configurations
                 self.stream_.set(cv2.CAP_PROP_FRAME_WIDTH, self.width_)
                 self.stream_.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height_)
                 self.stream_.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
@@ -73,7 +75,7 @@ class CameraStream:
                 break
 
     def update(self):
-        """ Pulls the last frame from the feed safely with Drop Detection and Heartbeat """
+        """ Pulls the last frame from the feed """
         fail_count = 0
         max_fails = 15  # ~150-300ms of dead air means the cable was unplugged
         
@@ -84,19 +86,16 @@ class CameraStream:
             # --- THREAD DIAGNOSTIC: 10-Second Ping ---
             current_time = time.time()
             if current_time - last_heartbeat >= 10.0:
-                # Because we updated our log() function earlier, this will automatically 
-                # print [CameraThread] if the thread name was set correctly in start()
                 log("HEARTBEAT: Camera loop is alive, active, and pulling frames.", "DEBUG")
                 last_heartbeat = current_time
 
-            # If the stream died, enter the recovery loop
             if not self.stream_.isOpened():
                 self._reconnect_hardware()
                 continue
 
             grabbed, frame = self.stream_.read()
             
-            # 3. Hardware Fault Tolerance / Drop Detection
+            # Hardware Fault Tolerance / Drop Detection
             if not grabbed or frame is None:
                 fail_count += 1
                 if fail_count > max_fails:
@@ -109,10 +108,10 @@ class CameraStream:
                 time.sleep(0.02)  # Wait 20ms before trying to read again
                 continue
                 
-            # If we grabbed a successful frame, reset the fail counter
+            # If the frame was successful, reset counter
             fail_count = 0
             
-            # Safely lock the memory, update the frame, and release the lock
+            # Lock the memory, update the frame, and release the lock
             with self.lock:
                 self.grabbed_ = grabbed
                 self.frame_ = frame
@@ -130,36 +129,3 @@ class CameraStream:
         if self.stream_.isOpened():
             self.stream_.release()
         log("Camera hardware released.", "WARNING")
-
-######################################################################################################################################################################
-#                                                                      Rotated Camera
-######################################################################################################################################################################
-
-class RotatedCameraStream(CameraStream):
-    """ 
-    Specialized stream for rotated hardware mounts.
-    Corrects orientation at the source to keep the AI pipeline upright.
-    """
-    def __init__(self, src=config.CAMERA_INDEX, rotation=cv2.ROTATE_90_CLOCKWISE):
-        # Initialize the base class first
-        super().__init__(src)
-        self.rotation_type = rotation
-        self.frame_ = np.zeros((self.height_, self.width_, 3), dtype=np.uint8)
-        
-        # Correct the dimensions once for external callers
-        if self.grabbed_:
-            temp_frame = cv2.rotate(self.frame_, self.rotation_type)
-            self.height_, self.width_ = temp_frame.shape[:2]
-            log(f"RotatedCamera initialized. New Virtual Res: {self.width_}x{self.height_}", "INFO")
-
-    def update(self):
-        """ Overrides the base update to inject the rotation logic """
-        while True:
-            if self.stopped_:
-                return
-            
-            (grabbed, raw_frame) = self.stream_.read()
-            if grabbed:
-                # Rotates the frame before saving it to the buffer
-                self.frame_ = cv2.rotate(raw_frame, self.rotation_type)
-                self.grabbed_ = grabbed

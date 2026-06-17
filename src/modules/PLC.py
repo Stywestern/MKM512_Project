@@ -1,7 +1,16 @@
+# src/modules/PLC.py
+
+
+##################################### Imports #####################################
+# Standart Libraries
 import socket
 import time
 from datetime import datetime
+
+# Modules
 from src.modules.utils import log
+
+###################################################################################
 
 class TurretPLC:
     def __init__(self, ip="192.168.0.101", port=23000):
@@ -72,7 +81,7 @@ class TurretPLC:
             # 1. Send the data
             self.socket_client.send(packet)
             
-            # 2. NON-BLOCKING READ: 
+            # 2. Non-blocking read: 
             self.socket_client.settimeout(0.01) 
             try:
                 response = self.socket_client.recv(7)

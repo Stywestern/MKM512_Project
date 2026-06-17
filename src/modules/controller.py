@@ -1,7 +1,7 @@
-# modules/controller.py
+# src/modules/controller.py
 
 ##################################### Imports #####################################
-# Libraries
+# Standart Libraries
 import numpy as np
 import time
 import threading
@@ -22,7 +22,7 @@ import src.config as config
 
 class SimTurretController:
     """
-    Standalone Virtual Turret.
+    Standalone Virtual Turret. Used if PLC is not connected. 
     Calculates physical offsets and simulates motor accumulation in the console.
     """
     def __init__(self):
@@ -146,23 +146,23 @@ class SimTurretController:
 class ControllerThread(threading.Thread):
     """
     Autonomous hardware state-machine. 
-    Maintains strict cycle times and owns the true physical state of the turret.
+    Maintains cycle times and manages the communication between the software and the turret.
     """
     def __init__(self, plc):
         super().__init__(name="HardwareThread", daemon=True)
         self.plc = plc
         self.running = True
         
-        # 1. State Machine Modes: "OVERWATCH", "TRACKING", "STANDBY"
+        # State Machine Modes: "OVERWATCH", "TRACKING", "STANDBY"
         self.mode = "OVERWATCH"
         
-        # 2. The Mailbox (Replaces queue.Queue)
+        # The Mailbox Message System
         self.target_pan = 0.0
         self.target_tilt = 0.0
         self.is_firing = False
         self.update_laser = False
         
-        # 3. Autonomous Overwatch State
+        # Autonomous Overwatch State
         self.sweep_pan = 0.0
         self.sweep_tilt = 0.0
         self.sweep_dir = "left"
@@ -172,7 +172,7 @@ class ControllerThread(threading.Thread):
     def set_mode(self, new_mode):
         """ Thread-safe trigger to change turret behavior """
         if self.mode != new_mode:
-            log(f"Hardware Thread: Shifting to {new_mode} mode", "DEBUG")
+            log(f"Shifting to {new_mode} mode", "DEBUG")
             self.mode = new_mode
 
     def update_tracking_target(self, pan, tilt, fire_cmd, update_laser):
@@ -185,6 +185,7 @@ class ControllerThread(threading.Thread):
     def run(self):
         log("Hardware Thread: Active and Autonomous", "INFO")
 
+        # ------------------------------------------ Main Loop ---------------------------------------------------------------------
         try:
             while self.running:
                 if not self.plc or not self.plc.connected:
@@ -193,7 +194,7 @@ class ControllerThread(threading.Thread):
 
                 # --- STATE: OVERWATCH ---
                 if self.mode == "OVERWATCH":
-                    # 1. Math logic
+                    # 1. Sweep logic
                     if self.sweep_dir == "left":
                         self.sweep_pan += self.sweep_speed
                         if self.sweep_pan >= self.sweep_range: self.sweep_dir = "right"
@@ -208,22 +209,20 @@ class ControllerThread(threading.Thread):
 
                 # --- STATE: TRACKING ---
                 elif self.mode == "TRACKING":
-                    # 1. ALWAYS send the pose
+                    # 1. Send the pose
                     ok, _ = self.plc.send_pose(pan=float(self.target_pan), tilt=float(self.target_tilt))
                     
-                    # 2. SEQUENCE CHECK:
+                    # 2. Manage laser relay command
                     # Only attempt to fire IF the pose was successful. 
-                    # If pose failed (PLC busy/moving), we skip firing this cycle 
-                    # so we don't clog the buffer.
+                    # If pose failed (PLC busy/moving), skip firing this cycle so it doesn't clog the buffer.
                     if ok and self.is_firing:
-                        # We send the fire command immediately after a successful pose
+                        # Send the fire command immediately after a successful pose
                         self.plc.set_laser(True)
                     elif ok and not self.is_firing:
-                        # If we aren't firing, ensure laser is explicitly off
+                        # If not firing, ensure laser is explicitly off
                         self.plc.set_laser(False)
                     
-                    # If !ok, we do nothing and let the loop restart. 
-                    # The Pose command will retry next time.
+                    # If !ok, do nothing and let the loop restart, pose command will retry next time.
                     time.sleep(0.03)
                 
                 else:
@@ -255,13 +254,17 @@ class RealTurretController:
     Acts purely as a mathematical PD calculator and Mailbox updater.
     """
     def __init__(self, plc_ref):
+        # System variables
         self.plc = plc_ref
         self.is_firing_latched = False
         self.target_csv_counter = 0
 
-        # Unified PD gains
-        self.kp = 0.06
-        self.kd = 0.02
+        # PD gains
+        self.pan_kp = 0.06
+        self.pan_kd = 0.02
+
+        self.tilt_kp = 0.06
+        self.tilt_kd = 0.02
 
         # Deadzone 
         self.deadzone_deg = 0.5
@@ -283,6 +286,7 @@ class RealTurretController:
         self.laser_offset_y_cm = 4.4 # camera-laser vertical difference
         self.laser_offset_x_cm = -5.5 # laser center and lens difference (experimental)
 
+        # Thread
         self.hw_thread = ControllerThread(self.plc)
         self.hw_thread.start()
         log("Controller: PHYSICAL hardware linked via Autonomous Background Thread", "INFO")
@@ -291,6 +295,7 @@ class RealTurretController:
         self.hw_thread.set_mode("OVERWATCH")
 
     def calculate_effort(self, target_deg_x, target_deg_y):
+        """ Calculates how much to turn for this iteration """
         current_time = time.time()
         dt = current_time - self.last_time
         
@@ -300,10 +305,10 @@ class RealTurretController:
         if abs(target_deg_y) < self.deadzone_deg: target_deg_y = 0.0
 
         # Position calculation
-        d_x = self.kd * (target_deg_x - self.last_error_x) / dt
-        d_y = self.kd * (target_deg_y - self.last_error_y) / dt
-        delta_pan = (self.kp * target_deg_x) + d_x
-        delta_tilt = (self.kp * target_deg_y) + d_y
+        d_x = self.pan_kd * (target_deg_x - self.last_error_x) / dt
+        d_y = self.tilt_kd * (target_deg_y - self.last_error_y) / dt
+        delta_pan = (self.pan_kp * target_deg_x) + d_x
+        delta_tilt = (self.tilt_kp * target_deg_y) + d_y
 
         # Angle clipping
         angle_max = 15
@@ -318,11 +323,11 @@ class RealTurretController:
         return delta_pan, delta_tilt
 
     def update_turret(self, pan_ref, tilt_ref, pixel_err_x, pixel_err_y, dist_cm, fire_cmd):
-
         """ Calculates tracking math and drops the result into the Mailbox """        
+
         # 1. Mode switch
         if self.hw_thread.mode != "TRACKING":
-            log("Controller: Executing seamless handoff to TRACKING", "DEBUG")
+            log("Controller: TRACKING mode active", "DEBUG")
             self.current_pan = self.hw_thread.sweep_pan
             self.current_tilt = self.hw_thread.sweep_tilt
             self.last_error_x = 0.0
@@ -330,7 +335,7 @@ class RealTurretController:
             self.last_time = time.time()
             self.hw_thread.set_mode("TRACKING")
 
-        # 2. Lock-in with no target
+        # 2. Lock-in with no target, stand still
         if pixel_err_x == 0 and pixel_err_y == 0:
             # Simply update the mailbox with current position to keep laser/fire state
             self.hw_thread.update_tracking_target(
@@ -341,7 +346,7 @@ class RealTurretController:
             )
             return
 
-        ## 3. Parallax & PID (Only reached if there IS an error)
+        ## 3. Parallax & PD (Only reached if there IS an error)
         # 3A: Distance clipping
         safe_dist = max(dist_cm, 10.0) # either true distance or 10 cm away
 

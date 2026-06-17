@@ -12,8 +12,6 @@ import cv2
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 
-# Modules
-
 ###################################################################################
 
 # Custom Logger
@@ -21,7 +19,7 @@ def log(message, level="INFO"):
     # 1. Get the name of the thread currently executing this line
     thread_name = threading.current_thread().name
     
-    # 2. Inspect the call stack to find out WHO called this log function
+    # 2. Inspect the call stack to find out which thread called this log function
     # stack()[1] is the caller. stack()[0] is this log function itself.
     caller_frame = inspect.stack()[1]
     caller_func = caller_frame.function

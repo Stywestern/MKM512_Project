@@ -1,15 +1,12 @@
 # modules/recognizer.py
 
 ##################################### Imports #####################################
-# Libraries
+# Standard Libraries
 import os
 import pickle
 import numpy as np
-import cv2
 
-import onnxruntime as ort
-
-from insightface.model_zoo import get_model
+# Third Party Libraries
 from insightface.utils import face_align
 
 # Modules

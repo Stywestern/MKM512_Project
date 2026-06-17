@@ -1,15 +1,13 @@
-# modules/detector.py
+# src/modules/detector.py
 
 ##################################### Imports #####################################
-# Libraries
-from ultralytics import YOLO
-from insightface.model_zoo import get_model
-
-from scipy.spatial import distance as dist
-
+# Standart Libraries
 import os
 import numpy as np
 from abc import ABC, abstractmethod
+
+# Third Party Libraries
+from insightface.model_zoo import get_model
 
 # Modules
 import src.config as config
@@ -26,58 +24,52 @@ class BaseDetector(ABC):
     def detect(self, frame):
         pass
 
+
 ##################################################################################
-#                               YOLOv8-Lindevs DETECTOR 
+#                               SCRFD DETECTOR
 ##################################################################################
 
-class YOLODetector(BaseDetector):
+class SCRFDDetector(BaseDetector):
     def __init__(self, threshold=config.DET_CONF_THRESHOLD):
-        """ Get the boxing model from local directory, move it to GPU if we can """
-
-        self.model_name_ = "yolov8n-face-lindevs.pt"
-        model_path = os.path.join("assets", "models", self.model_name_)
-
+        # SCRFD is usually distributed as an ONNX model
+        self.model_path_ = os.path.join("assets", "models", "scrfd_10g_bnkps.onnx")
         self.threshold_ = threshold
-        
-        try:
-            if os.path.exists(model_path):
-                log(f"Loading local model from: {model_path}", "INFO")
-                self.model_ = YOLO(model_path)
-            else:
-                log(f"{self.model_name_} not found in assets. Please make sure it is in the right folder", "ERROR")
-            
-            if config.RUN_ON_GPU:
-                self.model_.to('cuda')
-                log(f"YOLOv8 successfully loaded on GPU.", "INFO")
-            else:
-                log("Running on CPU. Performance may be limited.", "WARNING")
 
-        except Exception as e:
-            print(f"Failed to initialize detector: {e}", "ERROR")
-            raise 
+        self.focal_length = config.FOCAL_LENGTH # calibration
+        self.real_ipd = 6.3 # Average human eye distance in cm
+        
+        # Using InsightFace's model zoo for SCRFD
+        ctx_id = 0 if config.RUN_ON_GPU else -1
+        self.model = get_model(self.model_path_, providers=['CUDAExecutionProvider' if config.RUN_ON_GPU else 'CPUExecutionProvider'])
+        self.model.prepare(
+                ctx_id=ctx_id,
+                input_size=(640, 640),
+                det_thresh=self.threshold_
+            )
+
+        log("SCRFD Detector initialized.", "INFO")
 
     def __str__(self):
-        return f"YOLODetector(Model: {self.model_name_}), Conf_Threshold: %{self.threshold_ * 100}"
+        return f"SCRFD Detector (Model: {self.model_path}), Conf_Threshold: %{self.threshold_ * 100}"
 
     def detect(self, frame):
-        """Pure detection: returns [ [x1, y1, x2, y2, conf, cls], ... ]"""
-        results = self.model_.predict(source=frame, conf=self.threshold_, verbose=False)
+        """
+        Returns: 
+        1. boxes: Nx6 numpy array
+        2. landmarks: Nx5x2 numpy array
+        """
+        # SCRFD returns: bboxes [x1, y1, x2, y2, score], kpss [5 landmarks]
+        bboxes, kpss = self.model.detect(frame)
+        
+        if bboxes is None or len(bboxes) == 0:
+            return np.empty((0, 6)), np.empty((0, 5, 2)), []
+        
+        # Format for Tracker (BoxMOT needs Nx6)
+        detections = np.zeros((bboxes.shape[0], 6))
+        detections[:, :5] = bboxes
+        
+        return detections, kpss
 
-        if not results or len(results[0].boxes) == 0:
-            return np.empty((0, 6)) # Return empty array with 6 columns
-        
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        confs = results[0].boxes.conf.cpu().numpy()
-        
-        # Add a dummy class column (0 for face)
-        # Result: [x1, y1, x2, y2, confidence, class_id]
-        detections = []
-        for box, conf in zip(boxes, confs):
-            detections.append([*box, conf, 0]) 
-            
-        return np.array(detections)
-    
-    
 ##################################################################################
 #                               RetinaFace DETECTOR
 ##################################################################################
@@ -111,66 +103,3 @@ class RetinaDetector(BaseDetector):
         return np.array(detections)
     
 
-##################################################################################
-#                               SCRFD DETECTOR
-##################################################################################
-
-class SCRFDDetector(BaseDetector):
-    def __init__(self, threshold=config.DET_CONF_THRESHOLD):
-        # SCRFD is usually distributed as an ONNX model
-        self.model_path_ = os.path.join("assets", "models", "scrfd_10g_bnkps.onnx")
-        self.threshold_ = threshold
-
-        self.focal_length = config.FOCAL_LENGTH # calibration
-        self.real_ipd = 6.3 # Average human eye distance in cm
-        
-        # Using InsightFace's model zoo for SCRFD
-        ctx_id = 0 if config.RUN_ON_GPU else -1
-        self.model = get_model(self.model_path_, providers=['CUDAExecutionProvider' if config.RUN_ON_GPU else 'CPUExecutionProvider'])
-        self.model.prepare(
-                ctx_id=ctx_id,
-                input_size=(640, 640),
-                det_thresh=self.threshold_
-            )
-
-        log("SCRFD Detector initialized.", "INFO")
-
-    def __str__(self):
-        return f"SCRFD Detector (Model: {self.model_path}), Conf_Threshold: %{self.threshold_ * 100}"
-
-    def calculate_distance(self, landmarks):
-        """ Internal helper for IPD math, returns the calculated distance """
-        if landmarks is None or len(landmarks) < 2:
-            return None
-        
-        # 0: Left Eye, 1: Right Eye
-        p1, p2 = landmarks[0], landmarks[1]
-        pixel_dist = np.linalg.norm(p1 - p2)
-        
-        if pixel_dist < 1.0: return None
-        
-        # Distance = (Real_Width * Focal_Length) / Pixel_Width
-        return round((self.real_ipd * self.focal_length) / pixel_dist, 1)
-
-
-    def detect(self, frame):
-        """
-        Returns: 
-        1. boxes: Nx6 numpy array
-        2. landmarks: Nx5x2 numpy array
-        3. distances
-        """
-        # SCRFD returns: bboxes [x1, y1, x2, y2, score], kpss [5 landmarks]
-        bboxes, kpss = self.model.detect(frame)
-        
-        if bboxes is None or len(bboxes) == 0:
-            return np.empty((0, 6)), np.empty((0, 5, 2)), []
-        
-        # Format for Tracker (BoxMOT needs Nx6)
-        detections = np.zeros((bboxes.shape[0], 6))
-        detections[:, :5] = bboxes
-
-        # Calculate distance for every detected face
-        distances = [self.calculate_distance(k) for k in kpss]
-        
-        return detections, kpss, distances

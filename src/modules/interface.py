@@ -1,4 +1,4 @@
-# modules/interface.py
+# src/modules/interface.py
 
 ##################################### Imports #####################################
 

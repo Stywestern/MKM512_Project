@@ -1,12 +1,12 @@
-# modules/tracker.py
+# src/modules/tracker.py
 
 ##################################### Imports #####################################
-# Libraries
+# Standart Libraries
 import os
 import numpy as np
 from abc import ABC, abstractmethod
-from pathlib import Path
 
+# Third Party Libraries
 from boxmot import BotSort, ByteTrack
 import torch
 
@@ -47,13 +47,13 @@ class BoTSORTTracker(BaseTracker):
             half=False,
 
             # --- Persistent Tracking Adjustments ---
-            track_high_thresh=0.35,  # Lowered: Keeps tracks active during lower confidence (e.g. side profile)
-            track_low_thresh=0.05,   # Lowered: Absolute floor for Kalman filter updates
-            new_track_thresh=0.7,    # Increased: Be very sure before assigning a NEW ID (avoids ID swaps)
+            track_high_thresh=0.35,  # Keeps tracks active during lower confidence (e.g. side profile)
+            track_low_thresh=0.05,   # Absolute floor for Kalman filter updates
+            new_track_thresh=0.7,    # Be very sure before assigning a NEW ID (avoids ID swaps)
             
             # THE KEY PERSISTENCE PARAMETERS
-            track_buffer=90,        # Increased: Remember ID for ~3 seconds at 30fps (prevents ID flicker)
-            match_thresh=0.8,        # Increased: Favor visual Re-ID heavily over spatial position
+            track_buffer=90,        # Remember ID for ~3 seconds at 30fps (prevents ID flicker)
+            match_thresh=0.7,        # Favor visual Re-ID heavily over spatial position
             
             proximity_thresh=0.5,    # Spatial constraint (IoU)
             

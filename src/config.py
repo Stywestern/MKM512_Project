@@ -1,20 +1,20 @@
-# config.py
+# src/config.py
 
 # --- SYSTEM SETTINGS ---
 DEBUG_MODE = True               # Show video window for debugging
 
 # --- CAMERA SETTINGS ---
-CAMERA_INDEX = 0              # Change index to switch cameras
-FRAME_WIDTH = 1920              # A1 specs
+CAMERA_INDEX = 0                # Change index to switch cameras
+FRAME_WIDTH = 1920              # A4Tech camera specs
 FRAME_HEIGHT = 1080
 FPS = 30                        # Target framerate
-FOCAL_LENGTH = 1575   # Focal distance of the cam from datasheet
+FOCAL_LENGTH = 1575             # Focal distance of the cam from datasheet
 
 # --- DETECTOR SETTINGS ---
 RUN_ON_GPU = True               # Toggle GPU usage
 DET_CONF_THRESHOLD = 0.25       # How sure the detector machine should be
-REG_CONF_THRESHOLD = 0.6       # How sure the recognizer machine should be, but reversed and between 0-2
-RETRY_INTERVAL = 5.0           # Seconds to wait before re-identifying an Unknown
+REG_CONF_THRESHOLD = 0.6        # How sure the recognizer machine should be, but reversed and between 0-2
+RETRY_INTERVAL = 5.0            # Seconds to wait before re-identifying an Unknown
 
 
 # --- DATABASE SETTINGS ---

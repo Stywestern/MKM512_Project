@@ -1,4 +1,4 @@
-# modules/visionworker.py
+# src/modules/visionworker.py
 
 ##################################### Imports #####################################
 # Standart Libraries
@@ -422,7 +422,7 @@ class VisionWorker(QThread):
                 if not self.is_frozen:
 
                     # Step A: Get raw [x1, y1, x2, y2, conf], and facial landmarks from detector
-                    raw_boxes, landmarks, raw_distances = self.detector.detect(ai_frame)
+                    raw_boxes, landmarks = self.detector.detect(ai_frame)
                     
                     # Step B: Get [{'id': 1, 'face_bbox': [...], 'center': (...) }] from tracker
                     detections = self.tracker.update(raw_boxes, ai_frame)

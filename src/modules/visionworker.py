@@ -15,7 +15,7 @@ from collections import deque
 # Modules
 import src.config as config
 from src.modules.utils import log, create_event
-from src.modules.detector import YOLODetector, RetinaDetector, SCRFDDetector
+from src.modules.detector import RetinaDetector, SCRFDDetector
 from src.modules.tracker import BoTSORTTracker, ByteTrackTracker
 from src.modules.recognizer import TurretRecognizer
 from src.modules.controller import RealTurretController, SimTurretController

@@ -152,6 +152,8 @@ class ControllerThread(threading.Thread):
         super().__init__(name="HardwareThread", daemon=True)
         self.plc = plc
         self.running = True
+        self.last_heartbeat_time = time.time()
+        self.heartbeat_interval = 5.0  # Print state exactly once per 5 seconds
         
         # State Machine Modes: "OVERWATCH", "TRACKING", "STANDBY"
         self.mode = "OVERWATCH"
@@ -166,7 +168,7 @@ class ControllerThread(threading.Thread):
         self.sweep_pan = 0.0
         self.sweep_tilt = 0.0
         self.sweep_dir = "left"
-        self.sweep_speed = 4.0
+        self.sweep_speed = 0.0
         self.sweep_range = 20.0
 
     def set_mode(self, new_mode):
@@ -194,6 +196,9 @@ class ControllerThread(threading.Thread):
 
                 # --- STATE: OVERWATCH ---
                 if self.mode == "OVERWATCH":
+                    log("SWITCH: Start overwatch", "INFO")
+                    ok, _ = self.plc.send_pose(0, 0)
+
                     # 1. Sweep logic
                     if self.sweep_dir == "left":
                         self.sweep_pan += self.sweep_speed
@@ -202,31 +207,49 @@ class ControllerThread(threading.Thread):
                         self.sweep_pan -= self.sweep_speed
                         if self.sweep_pan <= -self.sweep_range: self.sweep_dir = "left"
 
-                    # 2. Wait-and-Verify with Backpressure
+                    # 2. Wait-and-Verify
                     ok, _ = self.plc.send_pose(pan=float(self.sweep_pan), tilt=float(self.sweep_tilt))
 
                     time.sleep(0.4)
 
                 # --- STATE: TRACKING ---
                 elif self.mode == "TRACKING":
-                    # 1. Send the pose
-                    ok, _ = self.plc.send_pose(pan=float(self.target_pan), tilt=float(self.target_tilt))
+                    # 1. Capture the telemetry dictionary instead of discarding it
+                    ok, telemetry = self.plc.send_pose(pan=float(self.target_pan), tilt=float(self.target_tilt))
                     
-                    # 2. Manage laser relay command
-                    # Only attempt to fire IF the pose was successful. 
-                    # If pose failed (PLC busy/moving), skip firing this cycle so it doesn't clog the buffer.
+                    # 2. SEQUENCE CHECK
                     if ok and self.is_firing:
-                        # Send the fire command immediately after a successful pose
                         self.plc.set_laser(True)
                     elif ok and not self.is_firing:
-                        # If not firing, ensure laser is explicitly off
                         self.plc.set_laser(False)
-                    
-                    # If !ok, do nothing and let the loop restart, pose command will retry next time.
+                        
+                    # 3. DIAGNOSTIC HEARTBEAT
+                    current_time = time.time()
+                    if current_time - self.last_heartbeat_time >= self.heartbeat_interval:
+                        # Check if the packet actually contains encoder data or a BUSY state
+                        if ok and "pan" in telemetry:
+    
+                            # Extract the function header byte from the hex string
+                            packet_header = telemetry["raw_bytes"][:2]
+                            
+                            # Condition 1: Direct Match for Pose telemetry
+                            if packet_header == "01":
+                                real_pan = telemetry["pan"]
+                                real_tilt = telemetry["tilt"]
+                                print(f"[TURRET HEARTBEAT]")
+                                print(f"  -> PAN  | Target Command: {self.target_pan:+.2f} deg | Actual Encoder: {real_pan:+.2f} deg")
+                                print(f"  -> TILT | Target Command: {self.target_tilt:+.2f} deg | Actual Encoder: {real_tilt:+.2f} deg")
+                                
+                            # Condition 2: Intercept the Laser confirmation frames
+                            elif packet_header == "0c":
+                                print(f"[TURRET HEARTBEAT] Warning: PLC is busy/moving (Laser State Sync Overlap)")
+                                
+                            # Condition 3: Catch any other standard busy signals
+                            elif telemetry.get("status") == "BUSY":
+                                print(f"[TURRET HEARTBEAT] Warning: PLC is busy/moving")
+                            
+                        self.last_heartbeat_time = current_time
                     time.sleep(0.03)
-                
-                else:
-                    time.sleep(0.1)
 
         except Exception as e:
             log(f"Hardware Loop Error: {e}", "ERROR")
@@ -311,7 +334,7 @@ class RealTurretController:
         delta_tilt = (self.tilt_kp * target_deg_y) + d_y
 
         # Angle clipping
-        angle_max = 15
+        angle_max = 30
         delta_pan = max(-angle_max, min(angle_max, delta_pan))
         delta_tilt = max(-angle_max, min(angle_max, delta_tilt))
 
@@ -353,8 +376,6 @@ class RealTurretController:
         # 3B: Parallax calculation
         parallax_tilt = math.degrees(math.atan2(self.laser_offset_y_cm, safe_dist))
         #parallax_pan = math.degrees(math.atan2(self.laser_offset_x_cm, safe_dist))
-        print("Distance(cm):", dist_cm)
-        #print("Laser tilt(degrees):", parallax_pan)
 
         # 3C: Error calculation
         deg_error_x = (pixel_err_x * self.deg_per_pixel_x)

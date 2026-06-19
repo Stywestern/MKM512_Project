@@ -19,7 +19,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 
 # Modules
-from src.modules.camera import CameraStream, RotatedCameraStream
+from src.modules.camera import CameraStream
 from src.modules.interface import SentryHUD
 from src.modules.visionworker import VisionWorker
 from src.modules.utils import log

@@ -12,7 +12,7 @@ from insightface.utils import face_align
 import cv2
 
 # Modules
-from src.modules.utils import log
+from modules.utils import log
 
 ###################################################################################
 

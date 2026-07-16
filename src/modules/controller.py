@@ -334,7 +334,7 @@ class RealTurretController:
         delta_tilt = (self.tilt_kp * target_deg_y) + d_y
 
         # Angle clipping
-        angle_max = 30
+        angle_max = 20
         delta_pan = max(-angle_max, min(angle_max, delta_pan))
         delta_tilt = max(-angle_max, min(angle_max, delta_tilt))
 
